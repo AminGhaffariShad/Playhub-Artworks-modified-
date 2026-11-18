@@ -317,7 +317,7 @@ const QuickAccessSettings: VFC = () => {
     if (cleaningArtwork || batchProgress?.running) return;
     setCleaningArtwork(true);
     try {
-      const result = await call<{ removed: number; bytes: number; errors: number; inventoryComplete: boolean }>('clean_unused_artwork');
+      const result = await call<[], { removed: number; bytes: number; errors: number; inventoryComplete: boolean }>('clean_unused_artwork');
       const summary = t('PA_CLEAN_UNUSED_RESULT', '{count} files removed ({size} MiB).')
         .replace('{count}', String(result.removed)).replace('{size}', (result.bytes / 1048576).toFixed(1));
       toaster.toast({ title: t('PA_CLEAN_UNUSED', 'Clean unused artwork'),
@@ -456,8 +456,12 @@ const QuickAccessSettings: VFC = () => {
                 )}
               </Focusable>
 
-              {(batchProgress?.kind === card.missingKind || batchProgress?.kind === card.replaceKind || batchProgress?.kind === card.localOnlyReplace || batchProgress?.kind === card.restoreKind)
-                && <Progress value={batchProgress} />}
+              {batchProgress && (
+                batchProgress.kind === card.missingKind
+                || batchProgress.kind === card.replaceKind
+                || (Boolean(card.localOnlyReplace) && batchProgress.kind === card.localOnlyReplace)
+                || (Boolean(card.restoreKind) && batchProgress.kind === card.restoreKind)
+              ) && <Progress value={batchProgress} />}
             </div>
           ))}
 
