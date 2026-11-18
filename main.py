@@ -78,6 +78,7 @@ _download_progress_lock = threading.Lock()
 _download_progress = {}
 SETTINGS_FILE = Path(decky.DECKY_PLUGIN_SETTINGS_DIR) / 'playhub_artworks.json'
 PERFECT_SOURCE_DIR = Path(decky.DECKY_PLUGIN_RUNTIME_DIR) / 'perfect_sources'
+PERFECT_HERO_BACKUP_DIR = Path(decky.DECKY_PLUGIN_RUNTIME_DIR) / 'perfect_hero_backups'
 DERIVED_COVER_BACKUP_DIR = Path(decky.DECKY_PLUGIN_RUNTIME_DIR) / 'derived_cover_backups'
 SETTINGS_BACKUP_FILE = SETTINGS_FILE.with_suffix('.json.bak')
 
@@ -1246,12 +1247,127 @@ class Plugin:
     async def set_steam_icon_from_path(self, appid, path):
         copyfile(path, get_steam_libcache() / str("%s_icon.jpg" % appid))
 
+    def _resolve_user_ids(self, steam_user=''):
+        user = str(steam_user or '').strip()
+        if user.isdigit() and int(user) > 0:
+            return [user]
+        if WINDOWS:
+            try:
+                active = self._auto_artwork_user()
+                if active and active.isdigit() and int(active) > 0:
+                    return [active]
+            except Exception:
+                pass
+        userdata = get_steam_userdata()
+        if userdata.exists():
+            users = sorted(
+                d.name for d in userdata.iterdir()
+                if d.is_dir() and d.name.isdigit() and int(d.name) > 0
+            )
+            if users:
+                return users
+        return []
+
+    def _swap_style_covers_sync(self, previous_format, target_format):
+        if target_format not in ('portrait', 'square'):
+            return
+        style_root = Path(decky.DECKY_PLUGIN_RUNTIME_DIR) / 'style_covers'
+        for uid in self._resolve_user_ids():
+            user_grid = get_steam_userdata() / uid / 'config' / 'grid'
+            if not user_grid.exists():
+                continue
+            user_style_dir = style_root / uid
+            # Snapshot existing custom covers into previous_format slot if not yet stored
+            if previous_format in ('portrait', 'square') and previous_format != target_format:
+                for file in list(user_grid.iterdir()):
+                    if not file.is_file():
+                        continue
+                    ext = file.suffix.lower()
+                    if ext not in ('.png', '.jpg', '.jpeg', '.webp'):
+                        continue
+                    match = re.fullmatch(r'(\d+)p', file.stem)
+                    if not match:
+                        continue
+                    appid = match.group(1)
+                    app_style_dir = user_style_dir / appid
+                    has_prev = any(
+                        (app_style_dir / f"{previous_format}{e}").is_file()
+                        for e in ('.png', '.jpg', '.jpeg', '.webp')
+                    )
+                    if not has_prev:
+                        try:
+                            app_style_dir.mkdir(parents=True, exist_ok=True)
+                            norm_ext = '.jpg' if ext == '.jpeg' else ext
+                            copyfile(file, app_style_dir / f"{previous_format}{norm_ext}")
+                        except Exception as snap_err:
+                            decky.logger.debug(f"Failed to snapshot previous cover for {appid}: {snap_err}")
+
+            if not user_style_dir.exists():
+                continue
+            for app_dir in user_style_dir.iterdir():
+                if not app_dir.is_dir() or not app_dir.name.isdigit():
+                    continue
+                appid = app_dir.name
+                target_file = None
+                for ext in ('.png', '.jpg', '.jpeg', '.webp'):
+                    candidate = app_dir / f"{target_format}{ext}"
+                    if candidate.is_file():
+                        target_file = candidate
+                        break
+                if target_file is not None:
+                    for p in list(user_grid.glob(f"{appid}p.*")):
+                        if p.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp'):
+                            p.unlink(missing_ok=True)
+                    dest_ext = '.jpg' if target_file.suffix.lower() == '.jpeg' else target_file.suffix.lower()
+                    copyfile(target_file, user_grid / f"{appid}p{dest_ext}")
+
+    async def save_style_cover(self, appid, asset_type, format, data_b64, style_override='', steam_user=''):
+        try:
+            if int(asset_type) != 0:
+                return False
+            app_str = _normalized_numeric_id(appid)
+            data = b64decode(data_b64)
+            if not data:
+                return False
+            norm_fmt = str(format or 'png').lower().lstrip('.')
+            if norm_fmt == 'jpeg':
+                norm_fmt = 'jpg'
+            if norm_fmt not in ('png', 'jpg', 'webp'):
+                norm_fmt = 'png'
+            layout = str(style_override or '').strip().lower()
+            if layout not in ('portrait', 'square'):
+                layout = str(self._settings_data.get('library_cover_format', 'portrait'))
+            if layout not in ('portrait', 'square'):
+                layout = 'portrait'
+            user_ids = self._resolve_user_ids(steam_user)
+            if not user_ids:
+                return False
+            for uid in user_ids:
+                style_dir = Path(decky.DECKY_PLUGIN_RUNTIME_DIR) / 'style_covers' / uid / app_str
+                style_dir.mkdir(parents=True, exist_ok=True)
+                for p in list(style_dir.glob(f"{layout}.*")):
+                    p.unlink(missing_ok=True)
+                target_path = style_dir / f"{layout}.{norm_fmt}"
+                _atomic_write_bytes(target_path, data)
+            return True
+        except Exception as e:
+            decky.logger.warning(f"Failed to save style cover: {e}")
+            return False
+
     async def set_setting(self, key, value):
+        previous_format = self._settings_data.get('library_cover_format', 'portrait')
         async with self._settings_lock:
             self._settings_data[str(key)] = value
             await asyncio.to_thread(_write_settings_file, self._settings_data)
         sensitive = any(marker in str(key).lower() for marker in ('api_key', 'token', 'secret', 'password', 'cookie', 'auth'))
         _diagnostic('setting.saved', key=key, value='[redacted]' if sensitive else value)
+
+        if str(key) == 'library_cover_format' and value in ('portrait', 'square'):
+            try:
+                await asyncio.to_thread(self._swap_style_covers_sync, previous_format, value)
+            except Exception as e:
+                decky.logger.warning(f"Dual-style swap failed: {e}")
+
         return True
 
     async def get_setting(self, key, fallback):
@@ -1503,6 +1619,260 @@ class Plugin:
                 await asyncio.to_thread(_write_settings_file, pending)
                 self._settings_data = pending
         _diagnostic('perfect.hero.reset', appid=appid, restore_logo=bool(restore_logo))
+        return True
+
+    # --- Pre-Perfect-Hero full snapshot (hero + logo + logo position) ----
+
+    def _perfect_hero_backup_dir(self, appid):
+        numeric = int(_normalized_numeric_id(appid, 'PA_ERROR_INVALID_ARTWORK'))
+        if numeric <= 0 or numeric > 0xffffffff:
+            raise ValueError('PA_ERROR_INVALID_ARTWORK')
+        return PERFECT_HERO_BACKUP_DIR / str(numeric)
+
+    async def backup_perfect_hero_state(self, appid=0, steam_user='', logo_position=None, overwrite=False):
+        """Snapshot the currently applied hero, logo, and logo position before applying a Perfect Hero."""
+        def backup_sync():
+            backup_dir = self._perfect_hero_backup_dir(appid)
+            metadata_path = backup_dir / 'metadata.json'
+            with self._derived_cover_lock:
+                if metadata_path.is_file() and not overwrite:
+                    try:
+                        existing = _read_json_object(metadata_path)
+                        if isinstance(existing, dict) and existing.get('appid') == int(appid):
+                            return {'saved': True, 'existing': True}
+                    except Exception:
+                        pass
+
+                user_ids = self._resolve_user_ids(steam_user)
+                userdata = get_steam_userdata()
+
+                hero_meta = {'had_custom': False}
+                for uid in user_ids:
+                    grid_dir = userdata / uid / 'config' / 'grid'
+                    candidates = _grid_file_candidates(grid_dir, appid, 'hero')
+                    if candidates:
+                        src = candidates[0]
+                        payload = src.read_bytes()
+                        fmt, _dims = _validate_artwork_content(payload, source=src, allow_source=True)
+                        filename = f'hero.{fmt}'
+                        _atomic_write_bytes(backup_dir / filename, payload)
+                        hero_meta = {
+                            'had_custom': True,
+                            'filename': filename,
+                            'format': fmt,
+                            'sha256': sha256(payload).hexdigest(),
+                        }
+                        break
+
+                logo_meta = {'had_custom': False}
+                for uid in user_ids:
+                    grid_dir = userdata / uid / 'config' / 'grid'
+                    candidates = _grid_file_candidates(grid_dir, appid, 'logo')
+                    if candidates:
+                        src = candidates[0]
+                        payload = src.read_bytes()
+                        fmt, _dims = _validate_artwork_content(payload, source=src, allow_source=True)
+                        filename = f'logo.{fmt}'
+                        _atomic_write_bytes(backup_dir / filename, payload)
+                        logo_meta = {
+                            'had_custom': True,
+                            'filename': filename,
+                            'format': fmt,
+                            'sha256': sha256(payload).hexdigest(),
+                        }
+                        break
+
+                raw_pos = None
+                for uid in user_ids:
+                    pos_file = userdata / uid / 'config' / 'grid' / f'{int(appid)}.json'
+                    if pos_file.is_file():
+                        try:
+                            data = _read_json_object(pos_file)
+                            candidate_pos = data.get('logoPosition')
+                            if (
+                                isinstance(candidate_pos, dict)
+                                and float(candidate_pos.get('nWidthPct', 0)) > 0.02
+                                and float(candidate_pos.get('nHeightPct', 0)) > 0.02
+                            ):
+                                raw_pos = candidate_pos
+                                break
+                        except Exception:
+                            pass
+
+                if raw_pos is None and isinstance(logo_position, dict):
+                    if (
+                        float(logo_position.get('nWidthPct', 0)) > 0.02
+                        and float(logo_position.get('nHeightPct', 0)) > 0.02
+                    ):
+                        raw_pos = logo_position
+
+                if raw_pos is None:
+                    stored_backup = self._settings_data.get(f'logo_position_backup_{int(appid)}')
+                    if (
+                        isinstance(stored_backup, dict)
+                        and float(stored_backup.get('nWidthPct', 0)) > 0.02
+                        and float(stored_backup.get('nHeightPct', 0)) > 0.02
+                    ):
+                        raw_pos = stored_backup
+
+                if isinstance(raw_pos, dict) and raw_pos.get('pinnedPosition'):
+                    pos_meta = {
+                        'had_custom': True,
+                        'position': {
+                            'pinnedPosition': str(raw_pos['pinnedPosition']),
+                            'nWidthPct': float(raw_pos['nWidthPct']),
+                            'nHeightPct': float(raw_pos['nHeightPct']),
+                        },
+                    }
+                else:
+                    pos_meta = {'had_custom': False, 'position': None}
+
+                metadata = {
+                    'version': 1,
+                    'appid': int(appid),
+                    'hero': hero_meta,
+                    'logo': logo_meta,
+                    'logo_position': pos_meta,
+                    'created_at': datetime.now(timezone.utc).isoformat(),
+                }
+                _atomic_write_json(metadata_path, metadata)
+                return {
+                    'saved': True,
+                    'existing': False,
+                    'hero': hero_meta,
+                    'logo': logo_meta,
+                    'logo_position': pos_meta,
+                }
+
+        try:
+            return await asyncio.get_running_loop().run_in_executor(self._download_executor, backup_sync)
+        except Exception as error:
+            _diagnostic('perfect.hero.backup_failed', appid=appid, error=error)
+            return {'saved': False, 'existing': False}
+
+    async def get_perfect_hero_backup_info(self, appid=0):
+        def read_sync():
+            try:
+                backup_dir = self._perfect_hero_backup_dir(appid)
+                metadata_path = backup_dir / 'metadata.json'
+                if metadata_path.is_file():
+                    metadata = _read_json_object(metadata_path)
+                    return {
+                        'exists': True,
+                        'has_backup': True,
+                        'hero': metadata.get('hero') or {'had_custom': False},
+                        'logo': metadata.get('logo') or {'had_custom': False},
+                        'logo_position': metadata.get('logo_position') or {'had_custom': False},
+                    }
+                source_path = self._find_perfect_source(appid, 'hero')
+                has_flag = bool(self._settings_data.get(f'perfect_hero_{int(appid)}'))
+                if source_path or has_flag:
+                    return {'exists': True, 'has_backup': False}
+                return {'exists': False, 'has_backup': False}
+            except Exception as error:
+                _diagnostic('perfect.hero.backup_info_failed', appid=appid, error=error)
+                return {'exists': False, 'has_backup': False}
+
+    async def prepare_perfect_hero_restore_payload(self, appid=0):
+        def prepare_sync():
+            backup_dir = self._perfect_hero_backup_dir(appid)
+            metadata_path = backup_dir / 'metadata.json'
+            if metadata_path.is_file():
+                metadata = _read_json_object(metadata_path)
+                hero_meta = metadata.get('hero') or {}
+                hero_file = backup_dir / str(hero_meta.get('filename') or '') if hero_meta.get('had_custom') else None
+                if hero_file and hero_file.is_file():
+                    hero_action = 'set'
+                    hero_path = str(hero_file)
+                else:
+                    hero_action = 'clear'
+                    hero_path = ''
+
+                logo_meta = metadata.get('logo') or {}
+                logo_file = backup_dir / str(logo_meta.get('filename') or '') if logo_meta.get('had_custom') else None
+                if logo_file and logo_file.is_file():
+                    logo_action = 'set'
+                    logo_path = str(logo_file)
+                else:
+                    logo_action = 'clear'
+                    logo_path = ''
+
+                pos_meta = metadata.get('logo_position') or {}
+                logo_position = pos_meta.get('position') if pos_meta.get('had_custom') else None
+                return {
+                    'exists': True,
+                    'hero_action': hero_action,
+                    'hero_path': hero_path,
+                    'logo_action': logo_action,
+                    'logo_path': logo_path,
+                    'logo_position': logo_position,
+                }
+
+            source_path = self._find_perfect_source(appid, 'hero')
+            has_flag = bool(self._settings_data.get(f'perfect_hero_{int(appid)}'))
+            if not source_path and not has_flag:
+                return {'exists': False}
+            pos_backup = self._settings_data.get(f'logo_position_backup_{int(appid)}')
+            return {
+                'exists': True,
+                'hero_action': 'set' if source_path else 'clear',
+                'hero_path': str(source_path) if source_path else '',
+                'logo_action': 'keep',
+                'logo_path': '',
+                'logo_position': pos_backup if isinstance(pos_backup, dict) else None,
+            }
+
+        try:
+            return await asyncio.get_running_loop().run_in_executor(self._download_executor, prepare_sync)
+        except Exception as error:
+            _diagnostic('perfect.hero.restore_prepare_failed', appid=appid, error=error)
+            return {'exists': False}
+
+    def _remove_perfect_hero_backup_sync(self, appid):
+        backup_dir = self._perfect_hero_backup_dir(appid)
+        if not backup_dir.exists():
+            return True
+        for child in list(backup_dir.iterdir()):
+            if child.is_file():
+                child.unlink(missing_ok=True)
+        try:
+            backup_dir.rmdir()
+        except OSError:
+            pass
+        return True
+
+    async def clear_perfect_hero_backup(self, appid=0):
+        def clear_sync():
+            with self._derived_cover_lock:
+                return self._remove_perfect_hero_backup_sync(appid)
+
+        try:
+            return await asyncio.get_running_loop().run_in_executor(self._download_executor, clear_sync)
+        except Exception as error:
+            _diagnostic('perfect.hero.backup_clear_failed', appid=appid, error=error)
+            return False
+
+    async def complete_perfect_hero_restore(self, appid=0):
+        numeric = int(_normalized_numeric_id(appid, 'PA_ERROR_INVALID_ARTWORK'))
+        if numeric <= 0 or numeric > 0xffffffff:
+            raise ValueError('PA_ERROR_INVALID_ARTWORK')
+        await self.clear_perfect_hero_backup(numeric)
+        await self.clear_perfect_source(numeric, 'hero')
+        async with self._settings_lock:
+            pending = dict(self._settings_data)
+            for prefix in (
+                'perfect_hero_',
+                'perfect_hero_info_',
+                'zazamastro_hero_',
+                'manual_zazamastro_hero_',
+                'logo_position_backup_',
+            ):
+                pending.pop(f'{prefix}{numeric}', None)
+            pending[f'logo_hidden_{numeric}'] = False
+            pending[f'logo_visible_{numeric}'] = True
+            await asyncio.to_thread(_write_settings_file, pending)
+            self._settings_data = pending
+        _diagnostic('perfect.hero.restored', appid=numeric)
         return True
 
     # --- Covers derived from a banner or hero ---------------------------

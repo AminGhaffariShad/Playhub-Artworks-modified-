@@ -1132,5 +1132,24 @@ def search_provider_assets(provider: str, title: str, asset_type: str, square_on
             continue
         seen.add(key)
         filtered.append(item)
-    filtered.sort(key=lambda item: int(item.get('width') or 0) * int(item.get('height') or 0), reverse=True)
+    def _sort_key(item: Dict[str, Any]):
+        w = int(item.get('width') or 0)
+        h = int(item.get('height') or 0)
+        pixels = w * h
+        if asset_type != 'logo' or w <= 0 or h <= 0:
+            return (0, pixels)
+        ratio = w / h
+        if 1.5 <= ratio <= 6.5:
+            tier = 3
+        elif 1.25 <= ratio < 1.5 or ratio > 6.5:
+            tier = 2
+        elif 0.85 <= ratio < 1.25:
+            tier = 1
+        else:
+            tier = 0
+        notes_blob = f"{item.get('notes', '')} {item.get('source', '')}".lower()
+        typo = 1 if any(k in notes_blob for k in ('typography', 'typeface', 'wordmark', 'logotype', 'lettering')) else 0
+        return (tier * 2 + typo, pixels)
+
+    filtered.sort(key=_sort_key, reverse=True)
     return filtered[:limit]
