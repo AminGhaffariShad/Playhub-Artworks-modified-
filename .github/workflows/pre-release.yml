@@ -71,8 +71,8 @@ jobs:
         with:
           version: 9
 
-      - name: Install Frontend Dependencies
-        run: pnpm install
+      - - name: Install Frontend Dependencies
+        run: rm -f pnpm-workspace.yaml && pnpm install --no-frozen-lockfile
 
       - name: Build Playhub Artworks
         uses: actions/github-script@v6
