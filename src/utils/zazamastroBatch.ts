@@ -21,6 +21,7 @@ import {
 } from './imageSafety';
 import log from './log';
 import { hideLogo, showLogo } from './logoControl';
+import { backupPerfectHeroState, getPerfectSource, restorePerfectHero } from './perfectArtwork';
 import { normalizeArtworkPayload } from './normalizeArtworkPayload';
 import {
   clearDerivedCoverBackup,
@@ -30,7 +31,7 @@ import {
 
 type CoverBatchKind = 'squareReplace' | 'squareMissing' | 'portraitReplace' | 'portraitMissing';
 type HeroBatchKind = 'perfectHeroReplace' | 'perfectHeroMissing';
-type ProcessableBatchKind = CoverBatchKind | HeroBatchKind | 'banner920' | 'missingLogos' | 'logoFix' | 'resetArtwork' | 'perfectHeroReset';
+type ProcessableBatchKind = CoverBatchKind | HeroBatchKind | 'perfectHeroLocal' | 'perfectHeroRestore' | 'banner920' | 'missingLogos' | 'logoFix' | 'resetArtwork' | 'perfectHeroReset';
 type BatchKind = Exclude<ProcessableBatchKind, 'perfectHeroReset'> | 'fixAll';
 export type ZazaBatchKind = BatchKind;
 
@@ -110,6 +111,7 @@ interface PreparedBulkArtwork {
   name: string;
   result: 'ready' | 'skipped';
   assetType?: SGDBAssetType;
+  coverShape?: 'square' | 'portrait';
   data?: string;
   format?: string;
   animated?: boolean;
@@ -171,6 +173,8 @@ const labelForKind: Record<BatchKind | 'perfectHeroReset', string> = {
   logoFix: t('PA_BATCH_LOGO_FIX', 'Logo fix'),
   resetArtwork: t('PA_BATCH_RESTORE', 'Restore Steam artwork'),
   fixAll: t('PA_BATCH_ALL', 'Everything'),
+  perfectHeroLocal: 'Rebuild Local',
+  perfectHeroRestore: 'Restore Original Heroes',
 };
 
 export type CoverShape = 'square' | 'portrait' | 'hero';
@@ -220,7 +224,7 @@ const isCoverKind = (kind: ProcessableBatchKind): kind is CoverBatchKind =>
   || kind === 'portraitReplace' || kind === 'portraitMissing';
 
 const isHeroKind = (kind: ProcessableBatchKind): kind is HeroBatchKind =>
-  kind === 'perfectHeroReplace' || kind === 'perfectHeroMissing';
+  kind === 'perfectHeroReplace' || kind === 'perfectHeroMissing' || kind === 'perfectHeroLocal';
 
 /** Sources the user has left switched on, in priority order. */
 const enabledCoverSources = async (shape: CoverShape): Promise<ArtworkProviderId[]> => {
@@ -813,8 +817,24 @@ const resolveLogoForApp = async (app: ZazaLibraryApp, sources: ArtworkProviderId
     const logo = await trySource(source);
     if (logo) return logo;
   }
+  const rankHorizontalTypographyLogo = (a: any, b: any) => {
+    const score = (item: any) => {
+      const w = Number(item?.width || 0);
+      const h = Number(item?.height || 0);
+      const ratio = w > 0 && h > 0 ? w / h : 0;
+      const tier = ratio >= 1.5 && ratio <= 6.5 ? 3
+        : (ratio >= 1.25 && ratio < 1.5) || ratio > 6.5 ? 2
+          : ratio >= 0.85 && ratio < 1.25 ? 1 : 0;
+      const tags = Array.isArray(item?.tags) ? item.tags.join(' ') : String(item?.tags ?? '');
+      const meta = `${item?.notes ?? ''} ${tags} ${item?.style ?? ''}`.toLowerCase();
+      const typo = /(?:typography|typeface|wordmark|logotype|lettering)/.test(meta) ? 1 : 0;
+      return tier * 2 + typo;
+    };
+    const diff = score(b) - score(a);
+    return diff !== 0 ? diff : (Number(b?.width || 0) * Number(b?.height || 0)) - (Number(a?.width || 0) * Number(a?.height || 0));
+  };
   try {
-    const logos = await assetsForApp(app, 'logo', { pages: 2, signal });
+    const logos = (await assetsForApp(app, 'logo', { pages: 2, signal })).sort(rankHorizontalTypographyLogo);
     for (const asset of logos.slice(0, 8)) {
       const logo = await trySource(String(asset.url));
       if (logo) return logo;
@@ -924,6 +944,7 @@ const resetPerfectHeroForRegeneration = async (app: ZazaLibraryApp, signal?: Abo
   // carry a logo despite lacking metadata, so preserve their hidden layer.
   const restoreLogo = hasPerfect && !(bannerMarked && bannerInfo?.withLogo !== false);
   if (hasPerfect) {
+    await backupPerfectHeroState(app.appid, false);
     await clearSteamArtworkSafely(app.appid, ASSET_TYPE.hero);
     // Finish restoring the logo/state even if cancellation arrived during Steam's
     // clear. The next app/download observes it; never leave a half-reset hidden logo.
@@ -938,7 +959,7 @@ const resetPerfectHeroForRegeneration = async (app: ZazaLibraryApp, signal?: Abo
   return hasPerfect;
 };
 
-const prepareAutoPerfectHero = async (rawApp: ZazaLibraryApp, sources: ArtworkProviderId[], replace: boolean, signal?: AbortSignal): Promise<PreparedHeroArtwork> => {
+const prepareAutoPerfectHero = async (rawApp: ZazaLibraryApp, sources: ArtworkProviderId[], replace: boolean, signal?: AbortSignal, localOnly: boolean = false): Promise<PreparedHeroArtwork> => {
   throwIfCancelled(signal);
   const name = rawApp.display_name || String(rawApp.appid);
   const [currentHero, marker, alreadyPerfect, info] = await Promise.all([
@@ -954,6 +975,126 @@ const prepareAutoPerfectHero = async (rawApp: ZazaLibraryApp, sources: ArtworkPr
     return { app: rawApp, name, result: 'skipped', isZazaMastro: false, skipReason: 'Perfect Hero already present' };
   }
   const app = await normalizeApp(rawApp);
+
+  if (localOnly) {
+    const [localHero, localLogo, backupPlan, preservedHeroUrl] = await Promise.all([
+      getLocalAssetInfo(app.appid, 'hero'),
+      getLocalAssetInfo(app.appid, 'logo'),
+      call<[number], { exists?: boolean; hero_action?: string; hero_path?: string; logo_action?: string; logo_path?: string }>(
+        'prepare_perfect_hero_restore_payload',
+        app.appid
+      ).catch(() => ({ exists: false })),
+      getPerfectSource(app.appid, 'hero'),
+    ]);
+
+    const isCurrentlyPerfect = Boolean(alreadyPerfect || hasZazaHero);
+    let heroUrl = '';
+    let heroSourceLabel = '';
+
+    // 1. Prefer the backed-up pre-Perfect-Hero hero file if one exists
+    if (backupPlan?.exists && backupPlan.hero_action === 'set' && backupPlan.hero_path) {
+      try {
+        const p = await readArtworkPayload(backupPlan.hero_path, { path: true, signal, staticOnly: true });
+        if (p) {
+          heroUrl = artworkPayloadUrl(p);
+          heroSourceLabel = backupPlan.hero_path;
+        }
+      } catch (e) {
+        throwIfCancelled(signal);
+      }
+    }
+
+    // 2. Otherwise prefer the preserved pristine Perfect Hero source
+    if (!heroUrl && preservedHeroUrl) {
+      heroUrl = preservedHeroUrl;
+      heroSourceLabel = 'preserved';
+    }
+
+    // 3. Otherwise use the currently applied local hero (ONLY if it is NOT already a baked Perfect Hero without a clean source)
+    if (!heroUrl && !isCurrentlyPerfect && localHero.path) {
+      try {
+        const p = await readArtworkPayload(localHero.path, { path: true, signal, staticOnly: true });
+        if (p) {
+          heroUrl = artworkPayloadUrl(p);
+          heroSourceLabel = localHero.path;
+        }
+      } catch (e) {
+        throwIfCancelled(signal);
+      }
+    }
+
+    if (!heroUrl) {
+      return {
+        app,
+        name,
+        result: 'skipped',
+        isZazaMastro: false,
+        skipReason: isCurrentlyPerfect ? 'Perfect Hero already applied (no unbaked source)' : 'no local hero installed',
+      };
+    }
+
+    // Resolve logo: (1) backed-up custom logo, (2) currently installed local logo, (3) Steam overview/official logo
+    let logoData = '';
+    const tryLocalLogoPath = async (logoPath?: string) => {
+      if (!logoPath) return '';
+      try {
+        const lp = await readArtworkPayload(logoPath, { path: true, signal, staticOnly: true });
+        return lp ? await usableLogo(artworkPayloadUrl(lp), signal) : '';
+      } catch (e) {
+        throwIfCancelled(signal);
+        return '';
+      }
+    };
+
+    if (backupPlan?.exists && backupPlan.logo_action === 'set' && backupPlan.logo_path) {
+      logoData = await tryLocalLogoPath(backupPlan.logo_path);
+    }
+    if (!logoData && localLogo.path) {
+      logoData = await tryLocalLogoPath(localLogo.path);
+    }
+    if (!logoData) {
+      const overview = await getAppOverview(app.appid);
+      if (overview) {
+        for (const src of artworkSources(overview, 'logo')) {
+          throwIfCancelled(signal);
+          try {
+            const lp = await readArtworkSource(src, { signal, staticOnly: true });
+            const usable = lp ? await usableLogo(artworkPayloadUrl(lp), signal) : '';
+            if (usable) {
+              logoData = usable;
+              break;
+            }
+          } catch (e) {
+            throwIfCancelled(signal);
+          }
+        }
+      }
+    }
+
+    if (!logoData) {
+      return { app, name, result: 'skipped', isZazaMastro: false, skipReason: 'missing local/official logo' };
+    }
+
+    try {
+      const composed = await composePerfectHero(heroUrl, logoData, signal);
+      return {
+        app,
+        name: app.display_name || name,
+        result: 'ready',
+        isZazaMastro: false,
+        perfectComposition: true,
+        data: composed.data,
+        format: composed.format,
+        animated: false,
+        assetUrl: heroSourceLabel,
+      };
+    } catch (e) {
+      throwIfCancelled(signal);
+      log('Local compose failed', app.appid, e);
+      return { app, name, result: 'skipped', isZazaMastro: false, skipReason: 'local composition failed' };
+    }
+  }
+
   try {
     const assets = await assetsForApp(app, 'hero', { pages: 4, predicate: isZazaMastroAsset, signal });
     for (const zazaAsset of assets.slice(0, 8)) {
@@ -998,6 +1139,9 @@ const applyPreparedHero3840 = async (prepared: PreparedHeroArtwork): Promise<Pro
 
   if (prepared.result === 'ready') {
     if (!prepared.data) throw new Error(t('PA_ERROR_INTERNAL_ARTWORK', 'The artwork operation could not be completed.'));
+    if (prepared.isZazaMastro || prepared.perfectComposition) {
+      await backupPerfectHeroState(prepared.app.appid);
+    }
     await applyDownloadedAsset(prepared.app.appid, 'hero', { data: prepared.data, format: prepared.format || 'png', animated: prepared.animated });
   }
 
@@ -1115,23 +1259,26 @@ const prepareBulkArtwork = async (
       ? 'grid_l'
       : 'logo';
 
-  // The cheapest test first: a game that already satisfies the request never
-  // wakes Steam's details store and never contacts a source.
+  const targetCoverShape = cover ? (shapeForKind(kind) as 'square' | 'portrait') : undefined;
+
+  if (cover && !replacesExisting(kind) && targetCoverShape) {
+    const alreadyStored = await call<[number, string, string], boolean>(
+      'has_style_cover',
+      rawApp.appid,
+      targetCoverShape,
+      ''
+    ).catch(() => false);
+    if (alreadyStored) {
+      return { app: rawApp, name: label, result: 'skipped', skipReason: `${targetCoverShape} cover already stored` };
+    }
+  }
+
+  // Next check active Steam cover: if it already matches the requested shape,
+  // snapshot it into the style slot and skip downloading a duplicate.
   const local = await getLocalAssetInfo(rawApp.appid, assetType);
 
-  /*
-    "Only the missing ones" stops here when a cover already exists. "Apply and replace"
-    goes on and overwrites - but the current cover is only cleared once a replacement has
-    actually been found and downloaded, so a game no source covers keeps what it had.
-  */
-  /*
-    "Missing" is judged per SHAPE, not per artwork.
-
-    A game with a vertical cover is missing a square one, so the square job replaces it -
-    and the other way round. Only a cover already in the requested shape counts as done.
-    "Apply and replace" ignores all of this and redoes every game of that shape.
-  */
-  if (cover && !replacesExisting(kind) && local.exists && coverMatchesShape(local, shapeForKind(kind))) {
+  if (cover && !replacesExisting(kind) && targetCoverShape && local.exists && coverMatchesShape(local, targetCoverShape)) {
+    await call('snapshot_active_cover_to_style', rawApp.appid, targetCoverShape, '').catch(() => undefined);
     return { app: rawApp, name: label, result: 'skipped', skipReason: 'cover already has this shape' };
   }
   if (kind === 'banner920' && local.exists && local.width && local.height && local.width >= 920 && local.height >= 430) {
@@ -1165,6 +1312,7 @@ const prepareBulkArtwork = async (
     name,
     result: 'ready',
     assetType,
+    coverShape: targetCoverShape,
     data: payload.data,
     format: payload.format,
     animated: payload.animated,
@@ -1175,6 +1323,35 @@ const applyPreparedBulkArtwork = async (prepared: PreparedBulkArtwork): Promise<
   if (prepared.result === 'skipped') return 'skipped';
   if (!prepared.assetType || !prepared.data) {
     throw new Error(t('PA_ERROR_INTERNAL_ARTWORK', 'The artwork operation could not be completed.'));
+  }
+
+  if (prepared.assetType === 'grid_p' && prepared.coverShape) {
+    const normalized = await normalizeArtworkPayload({
+      data: prepared.data,
+      format: prepared.format || 'png',
+      animated: prepared.animated,
+    });
+    await call(
+      'save_style_cover',
+      prepared.app.appid,
+      0,
+      normalized.format,
+      normalized.data,
+      prepared.coverShape,
+      ''
+    ).catch(() => undefined);
+
+    const storedShape = await call<[string, string], string>('get_setting', 'library_cover_format', 'portrait').catch(() => 'portrait');
+    const activeShape = storedShape === 'square' ? 'square' : 'portrait';
+    const currentGrid = await getLocalAssetInfo(prepared.app.appid, 'grid_p');
+    if (activeShape === prepared.coverShape || !currentGrid.exists) {
+      await applyDownloadedAsset(
+        prepared.app.appid,
+        'grid_p',
+        { data: normalized.data, format: normalized.format, animated: prepared.animated }
+      );
+    }
+    return 'changed';
   }
 
   const apply = () => applyDownloadedAsset(
@@ -1286,6 +1463,33 @@ export const runZazaMastroBatch = async (
       }
       continue;
     }
+    if (phase === 'perfectHeroRestore') {
+      for (const app of apps) {
+        throwIfCancelled(signal);
+        const current = app.display_name || String(app.appid);
+        emit(processed, current, phase);
+        try {
+          // Check if it's a perfect hero and restore
+          const marked = await call<[string, boolean], boolean>('get_setting', `perfect_hero_${app.appid}`, false);
+          if (marked) {
+             const restored = await restorePerfectHero(app.appid);
+             if (restored) counters.changed += 1;
+             else counters.skipped += 1;
+          } else {
+             counters.skipped += 1;
+          }
+        } catch (error) {
+          if ((error as Error)?.name === 'AbortError') throw error;
+          counters.failed += 1;
+          lastError = `${current}: ${errorMessage(error)}`;
+          log('Artwork perfect hero restore error', app.appid, error);
+        }
+        processed += 1;
+        emit(processed, current, phase);
+      }
+      continue;
+    }
+    
     if (isHeroKind(phase)) {
       // ZazaMastro discovery has priority; a regular 3840x1240 hero is prepared
       // only as fallback. Network work stays ahead of the Steam writer pool.
@@ -1303,7 +1507,7 @@ export const runZazaMastroBatch = async (
             prepareIndex,
             heroResetFailures.has(app.appid)
               ? Promise.resolve({ error: heroResetFailures.get(app.appid) })
-              : prepareAutoPerfectHero(app, heroSources, replacesExisting(phase), signal)
+              : prepareAutoPerfectHero(app, heroSources, replacesExisting(phase), signal, phase === 'perfectHeroLocal')
                 .then((prepared) => ({ prepared }))
                 .catch((error) => ({ error }))
           );
