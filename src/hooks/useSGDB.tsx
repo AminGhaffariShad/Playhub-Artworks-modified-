@@ -155,6 +155,9 @@ export const SGDBProvider: FC<{ children: ReactNode }> = ({ children }) => {
   const changeAsset: SGDBContextType['changeAsset'] = useCallback(async (data, assetType, format = 'png') => {
     assetType = getAmbiguousAssetType(assetType);
     try {
+      if (assetType === 0) { // ASSET_TYPE.grid_p
+          call('save_style_cover', appId, assetType, format, data).catch(() => undefined);
+      }
       await withSteamArtworkWriteLock(async () => {
         if (!isRuntimeActive()) throw new DOMException('Aborted', 'AbortError');
         await clearAsset(assetType);
