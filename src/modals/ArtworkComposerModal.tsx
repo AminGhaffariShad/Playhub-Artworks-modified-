@@ -273,6 +273,7 @@ const ArtworkComposerModal: FC<{
   }, [composed, currentCandidates, originalCandidates, zazaBackground]);
 
   const steamBackground = useArtworkPreview(backgroundCandidates);
+  const logoCandidates = useMemo(() => (app && logoPreferenceReady && !logoHidden ? artworkSources(app, 'logo') : []), [app, logoPreferenceReady, logoHidden]);
   const steamLogoSource = useArtworkPreview(logoCandidates);
   const logoSource = useLocalCustomHero && localLogoUrl ? localLogoUrl : steamLogoSource;
 
