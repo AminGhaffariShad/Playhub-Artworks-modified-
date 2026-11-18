@@ -39,7 +39,7 @@ export type SGDBContextType = {
   searchGames: (term: string) => Promise<Array<any>>;
   getSgdbGame: (sgdbGame: any) => Promise<any>;
   getSgdbGameBySteamAppId: (steamAppId: number) => Promise<any>;
-  changeAsset: (data: string, assetType: SGDBAssetType | eAssetType, format?: 'png' | 'jpg') => Promise<void>;
+  changeAsset: (data: string, assetType: SGDBAssetType | eAssetType, format?: 'png' | 'jpg', styleOverride?: 'portrait' | 'square') => Promise<void>;
   changeAssetFromUrl: (location: string, assetType: SGDBAssetType | eAssetType, path?: boolean) => Promise<void>;
   clearAsset: (assetType: SGDBAssetType | eAssetType) => Promise<void>;
   apiConfigured: boolean;
@@ -152,11 +152,11 @@ export const SGDBProvider: FC<{ children: ReactNode }> = ({ children }) => {
     }
   }, [appId, appOverview]);
 
-  const changeAsset: SGDBContextType['changeAsset'] = useCallback(async (data, assetType, format = 'png') => {
+  const changeAsset: SGDBContextType['changeAsset'] = useCallback(async (data, assetType, format = 'png', styleOverride) => {
     assetType = getAmbiguousAssetType(assetType);
     try {
       if (assetType === 0) { // ASSET_TYPE.grid_p
-          call('save_style_cover', appId, assetType, format, data).catch(() => undefined);
+        await call('save_style_cover', appId, assetType, format, data, styleOverride ?? '').catch(() => undefined);
       }
       await withSteamArtworkWriteLock(async () => {
         if (!isRuntimeActive()) throw new DOMException('Aborted', 'AbortError');
