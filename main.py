@@ -1321,6 +1321,118 @@ class Plugin:
                     dest_ext = '.jpg' if target_file.suffix.lower() == '.jpeg' else target_file.suffix.lower()
                     copyfile(target_file, user_grid / f"{appid}p{dest_ext}")
 
+    def _find_style_cover_file(self, appid, style, steam_user=''):
+        layout = str(style or '').strip().lower()
+        if layout not in ('portrait', 'square'):
+            return None
+        app_str = _normalized_numeric_id(appid)
+        style_root = Path(decky.DECKY_PLUGIN_RUNTIME_DIR) / 'style_covers'
+        for uid in self._resolve_user_ids(steam_user):
+            app_dir = style_root / uid / app_str
+            if not app_dir.is_dir():
+                continue
+            for ext in ('.png', '.jpg', '.jpeg', '.webp'):
+                candidate = app_dir / f"{layout}{ext}"
+                if candidate.is_file():
+                    return candidate
+        return None
+
+    async def has_style_cover(self, appid, style='square', steam_user=''):
+        def check_sync():
+            try:
+                return self._find_style_cover_file(appid, style, steam_user) is not None
+            except Exception:
+                return False
+        return await asyncio.get_running_loop().run_in_executor(self._download_executor, check_sync)
+
+    async def get_style_cover_info(self, appid, style='portrait', steam_user=''):
+        def info_sync():
+            try:
+                layout = str(style or '').strip().lower()
+                if layout not in ('portrait', 'square'):
+                    return {'exists': False}
+                stored = self._find_style_cover_file(appid, layout, steam_user)
+                if stored is not None:
+                    wh = _image_size(stored)
+                    res = {'exists': True, 'path': str(stored), 'source': 'style_slot'}
+                    if wh:
+                        res['width'], res['height'] = wh[0], wh[1]
+                    return res
+
+                # Fall back to active Steam grid_p if its shape matches this style
+                userdata = get_steam_userdata()
+                if userdata.exists():
+                    for uid in self._resolve_user_ids(steam_user):
+                        grid_dir = userdata / uid / 'config' / 'grid'
+                        for candidate in _grid_file_candidates(grid_dir, appid, 'grid_p'):
+                            wh = _image_size(candidate)
+                            if not wh or not wh[0] or not wh[1]:
+                                continue
+                            ratio = wh[0] / wh[1]
+                            matches = (0.8 <= ratio <= 1.25) if layout == 'square' else (ratio < 0.8)
+                            if matches:
+                                return {
+                                    'exists': True,
+                                    'path': str(candidate),
+                                    'source': 'active_grid',
+                                    'width': wh[0],
+                                    'height': wh[1],
+                                }
+                return {'exists': False}
+            except Exception as e:
+                decky.logger.debug(f"get_style_cover_info failed for {appid}/{style}: {e}")
+                return {'exists': False}
+        return await asyncio.get_running_loop().run_in_executor(self._download_executor, info_sync)
+
+    async def snapshot_active_cover_to_style(self, appid, style='portrait', steam_user=''):
+        def snap_sync():
+            try:
+                layout = str(style or '').strip().lower()
+                if layout not in ('portrait', 'square'):
+                    return False
+                if self._find_style_cover_file(appid, layout, steam_user) is not None:
+                    return True
+                app_str = _normalized_numeric_id(appid)
+                userdata = get_steam_userdata()
+                if not userdata.exists():
+                    return False
+                for uid in self._resolve_user_ids(steam_user):
+                    grid_dir = userdata / uid / 'config' / 'grid'
+                    candidates = _grid_file_candidates(grid_dir, appid, 'grid_p')
+                    if candidates:
+                        src = candidates[0]
+                        ext = '.jpg' if src.suffix.lower() == '.jpeg' else src.suffix.lower()
+                        if ext not in ('.png', '.jpg', '.webp'):
+                            ext = '.png'
+                        style_dir = Path(decky.DECKY_PLUGIN_RUNTIME_DIR) / 'style_covers' / uid / app_str
+                        style_dir.mkdir(parents=True, exist_ok=True)
+                        copyfile(src, style_dir / f"{layout}{ext}")
+                        return True
+                return False
+            except Exception as e:
+                decky.logger.debug(f"snapshot_active_cover_to_style failed for {appid}/{style}: {e}")
+                return False
+        return await asyncio.get_running_loop().run_in_executor(self._download_executor, snap_sync)
+
+    async def delete_style_cover(self, appid, style='portrait', steam_user=''):
+        def del_sync():
+            try:
+                layout = str(style or '').strip().lower()
+                if layout not in ('portrait', 'square'):
+                    return False
+                app_str = _normalized_numeric_id(appid)
+                style_root = Path(decky.DECKY_PLUGIN_RUNTIME_DIR) / 'style_covers'
+                for uid in self._resolve_user_ids(steam_user):
+                    app_dir = style_root / uid / app_str
+                    if app_dir.is_dir():
+                        for p in list(app_dir.glob(f"{layout}.*")):
+                            p.unlink(missing_ok=True)
+                return True
+            except Exception as e:
+                decky.logger.warning(f"Failed to delete style cover: {e}")
+                return False
+        return await asyncio.get_running_loop().run_in_executor(self._download_executor, del_sync)
+
     async def save_style_cover(self, appid, asset_type, format, data_b64, style_override='', steam_user=''):
         try:
             if int(asset_type) != 0:
