@@ -1,6 +1,7 @@
-import { Focusable, showModal } from '@decky/ui';
+import { DialogButton, Focusable, ModalRoot, showModal } from '@decky/ui';
 import { call, toaster } from '@decky/api';
 import { useState, FC, useRef, useEffect, useCallback } from 'react';
+import { MdApps, MdCropPortrait } from 'react-icons/md';
 
 import { useSGDB } from '../../hooks/useSGDB';
 import Asset from '../asset/Asset';
@@ -12,7 +13,42 @@ import useAssetSearch from '../../hooks/useAssetSearch';
 import useSettings from '../../hooks/useSettings';
 import { artworkJobKey, isArtworkTargetBusy, useArtworkJobs } from '../../utils/artworkJobStore';
 import { isZazaMastroAsset } from '../../utils/zazamastroBatch';
+import { readArtworkPayload } from '../../utils/artworkTransfer';
+import { normalizeArtworkPayload } from '../../utils/normalizeArtworkPayload';
 import { backupPerfectHeroState, clearPerfectArtwork, markPerfectArtwork } from '../../utils/perfectArtwork';
+
+const CoverStyleChoiceModal: FC<{
+  closeModal?: () => void;
+  gameName: string;
+  onSelectStyle: (style: 'portrait' | 'square') => void;
+}> = ({ closeModal, gameName, onSelectStyle }) => {
+  const choose = (style: 'portrait' | 'square') => {
+    closeModal?.();
+    onSelectStyle(style);
+  };
+  return (
+    <ModalRoot closeModal={closeModal}>
+      <Focusable flow-children="vertical" style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '8px 4px' }}>
+        <strong style={{ fontSize: 18 }}>{t('PA_ASSIGN_COVER_STYLE_TITLE', 'Assign cover style')}</strong>
+        <span style={{ fontSize: 13, opacity: 0.78 }}>
+          {t('PA_ASSIGN_COVER_STYLE_DESC', 'Save this cover for {gameName} as a Vertical cover or Square cover?').replace('{gameName}', gameName || '')}
+        </span>
+        <DialogButton onClick={() => choose('portrait')}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <MdCropPortrait />
+            <span>{t('PA_VERTICAL_COVER', 'Vertical cover')}</span>
+          </span>
+        </DialogButton>
+        <DialogButton onClick={() => choose('square')}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <MdApps />
+            <span>{t('PA_SQUARE_COVER', 'Square cover')}</span>
+          </span>
+        </DialogButton>
+      </Focusable>
+    </ModalRoot>
+  );
+};
 
 const AssetTab: FC<{ assetType: SGDBAssetType; onArtworkApplied?: () => void }> = ({ assetType, onArtworkApplied }) => {
   const { get } = useSettings();
@@ -25,7 +61,7 @@ const AssetTab: FC<{ assetType: SGDBAssetType; onArtworkApplied?: () => void }> 
     endReached,
     currentFilters,
   } = useAssetSearch();
-  const { appOverview, changeAssetFromUrl } = useSGDB();
+  const { appOverview, changeAsset, changeAssetFromUrl } = useSGDB();
   const artworkJobs = useArtworkJobs();
   const [tabLoading, setTabLoading] = useState(true);
   const loading = searchLoading || tabLoading;
@@ -33,8 +69,54 @@ const AssetTab: FC<{ assetType: SGDBAssetType; onArtworkApplied?: () => void }> 
   const scrollRef = useRef<HTMLDivElement>(null);
   const intersectRef = useRef<HTMLDivElement>(null);
 
+  const applyCoverForStyle = useCallback(async (asset: any, chosenStyle: 'portrait' | 'square') => {
+    if (isArtworkTargetBusy(appOverview.appid, 'grid_p')) return;
+    try {
+      const payload = await readArtworkPayload(asset.url);
+      if (!payload) {
+        throw new Error(t('PA_ERROR_RETRIEVE_ASSET', 'The artwork could not be retrieved.'));
+      }
+      const normalized = await normalizeArtworkPayload(payload);
+      const activeFormat = String(await get('library_cover_format', 'portrait')) === 'square' ? 'square' : 'portrait';
+      if (activeFormat === chosenStyle) {
+        await changeAsset(normalized.data, 'grid_p', normalized.format, chosenStyle);
+      } else {
+        await call('save_style_cover', appOverview.appid, 0, normalized.format, normalized.data, chosenStyle);
+      }
+      onArtworkApplied?.();
+      toaster.toast({
+        title: appOverview?.display_name,
+        body: activeFormat === chosenStyle
+          ? (chosenStyle === 'square'
+            ? t('PA_SQUARE_COVER_APPLIED', 'Square cover applied!')
+            : t('PA_VERTICAL_COVER_APPLIED', 'Vertical cover applied!'))
+          : (chosenStyle === 'square'
+            ? t('PA_SQUARE_COVER_SAVED', 'Saved as Square cover (applies when switching to Square).')
+            : t('PA_VERTICAL_COVER_SAVED', 'Saved as Vertical cover (applies when switching to Portrait).')),
+        icon: <MenuIcon />,
+        duration: 2000,
+      });
+    } catch (err: any) {
+      toaster.toast({
+        title: t('MSG_ASSET_APPLY_ERROR', 'There was a problem applying this asset.'),
+        body: localizeError(err),
+        icon: <MenuIcon fill="#f3171e" />,
+      });
+    }
+  }, [appOverview, changeAsset, get, onArtworkApplied]);
+
   const setAsset = useCallback(async (asset: any) => {
     if (isArtworkTargetBusy(appOverview.appid, assetType)) return;
+    if (assetType === 'grid_p') {
+      showModal(
+        <CoverStyleChoiceModal
+          gameName={appOverview?.display_name ?? ''}
+          onSelectStyle={(style) => { void applyCoverForStyle(asset, style); }}
+        />,
+        window
+      );
+      return;
+    }
     try {
       /*
         There is only ever one hero (and one banner) per game. Picking a new one from the
@@ -82,7 +164,7 @@ const AssetTab: FC<{ assetType: SGDBAssetType; onArtworkApplied?: () => void }> 
         icon: <MenuIcon fill="#f3171e" />,
       });
     }
-  }, [appOverview, assetType, changeAssetFromUrl, onArtworkApplied]);
+  }, [appOverview, applyCoverForStyle, assetType, changeAssetFromUrl, onArtworkApplied]);
 
   const openDetails = useCallback((asset: any) => {
     showModal(

@@ -11,6 +11,8 @@ import getAppOverview from '../../utils/getAppOverview';
 import { clearPerfectArtwork, hasPerfectHeroBackup, isPerfectArtwork, restorePerfectHero } from '../../utils/perfectArtwork';
 import openFilePicker, { isFilePickerCancelled } from '../../utils/openFilePicker';
 import { artworkSources, useArtworkPreview } from '../../utils/artworkSources';
+import { artworkPayloadUrl, readArtworkPayload } from '../../utils/artworkTransfer';
+import { normalizeArtworkPayload } from '../../utils/normalizeArtworkPayload';
 import {
   clearDerivedCoverBackup,
   clearSteamArtworkSafely,
@@ -18,17 +20,21 @@ import {
   restoreDerivedCover,
 } from '../../utils/derivedCover';
 
-const SLOTS: Array<{ assetType: SGDBAssetType; title: string; hint: string }> = [
-  { assetType: 'grid_p', title: t('PA_COVER', 'Cover'), hint: t('PA_COVER_HINT', 'Portrait or square, used in the library') },
-  { assetType: 'grid_l', title: t('PA_BANNER', 'Banner'), hint: t('PA_BANNER_HINT', 'Horizontal capsule') },
-  { assetType: 'hero', title: t('PA_BACKGROUND', 'Background'), hint: t('PA_BACKGROUND_HINT', 'Game page header') },
-  { assetType: 'logo', title: t('ASSET_TYPE_LOGO', 'Logo'), hint: t('PA_LOGO_HINT', 'Transparent, overlaid on the background') },
-  { assetType: 'icon', title: t('ASSET_TYPE_ICON', 'Icon'), hint: t('PA_ICON_HINT', 'Square, used in lists') },
+type SlotKey = 'grid_p_portrait' | 'grid_p_square' | 'grid_l' | 'hero' | 'logo' | 'icon';
+
+const SLOTS: Array<{ slotKey: SlotKey; assetType: SGDBAssetType; coverStyle?: 'portrait' | 'square'; title: string; hint: string }> = [
+  { slotKey: 'grid_p_portrait', assetType: 'grid_p', coverStyle: 'portrait', title: t('PA_VERTICAL_COVER', 'Vertical cover'), hint: t('PA_VERTICAL_COVER_HINT', 'Portrait cover (2:3), used in portrait library mode') },
+  { slotKey: 'grid_p_square', assetType: 'grid_p', coverStyle: 'square', title: t('PA_SQUARE_COVER', 'Square cover'), hint: t('PA_SQUARE_COVER_HINT', 'Square cover (1:1), used in square library mode') },
+  { slotKey: 'grid_l', assetType: 'grid_l', title: t('PA_BANNER', 'Banner'), hint: t('PA_BANNER_HINT', 'Horizontal capsule') },
+  { slotKey: 'hero', assetType: 'hero', title: t('PA_BACKGROUND', 'Background'), hint: t('PA_BACKGROUND_HINT', 'Game page header') },
+  { slotKey: 'logo', assetType: 'logo', title: t('ASSET_TYPE_LOGO', 'Logo'), hint: t('PA_LOGO_HINT', 'Transparent, overlaid on the background') },
+  { slotKey: 'icon', assetType: 'icon', title: t('ASSET_TYPE_ICON', 'Icon'), hint: t('PA_ICON_HINT', 'Square, used in lists') },
 ];
 
 const AssetSlot: FC<{
   app: AppStoreAppOverview;
   assetType: SGDBAssetType;
+  coverStyle?: 'portrait' | 'square';
   title: string;
   hint: string;
   browseStartPath: string;
@@ -36,16 +42,46 @@ const AssetSlot: FC<{
   active: boolean;
   onActivate: () => void;
   onDeactivate: () => void;
-}> = ({ app, assetType, title, hint, browseStartPath, editable, active, onActivate, onDeactivate }) => {
-  const { clearAsset, changeAssetFromUrl } = useSGDB();
+}> = ({ app, assetType, coverStyle, title, hint, browseStartPath, editable, active, onActivate, onDeactivate }) => {
+  const { clearAsset, changeAsset, changeAssetFromUrl } = useSGDB();
   const [overview, setOverview] = useState<AppStoreAppOverview>(app);
   const [reloadKey, setReloadKey] = useState(0);
   const [busy, setBusy] = useState(false);
   const [derivedCover, setDerivedCover] = useState(false);
   const [restorableHero, setRestorableHero] = useState(false);
+  const [stylePreview, setStylePreview] = useState('');
   const cardRef = useRef<HTMLDivElement>(null);
 
-  const preview = useArtworkPreview(artworkSources(overview, assetType), reloadKey);
+  const genericPreview = useArtworkPreview(coverStyle ? [] : artworkSources(overview, assetType), reloadKey);
+  const preview = coverStyle ? stylePreview : genericPreview;
+
+  useEffect(() => {
+    if (!coverStyle) {
+      setStylePreview('');
+      return;
+    }
+    let mounted = true;
+    void (async () => {
+      try {
+        const info = await call<[number, string, string], { exists?: boolean; path?: string }>(
+          'get_style_cover_info',
+          app.appid,
+          coverStyle,
+          ''
+        );
+        if (!mounted) return;
+        if (info?.exists && info.path) {
+          const payload = await readArtworkPayload(info.path, { path: true, staticOnly: true });
+          if (mounted) setStylePreview(payload ? artworkPayloadUrl(payload) : '');
+        } else {
+          setStylePreview('');
+        }
+      } catch (_) {
+        if (mounted) setStylePreview('');
+      }
+    })();
+    return () => { mounted = false; };
+  }, [app.appid, coverStyle, reloadKey]);
 
   const refresh = useCallback(async () => {
     await new Promise((resolve) => setTimeout(resolve, 400));
@@ -103,6 +139,18 @@ const AssetSlot: FC<{
     const path = await openFilePicker(browseStartPath, true, undefined, {
       validFileExtensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'apng', 'tiff', 'tga'],
     });
+    if (coverStyle) {
+      const payload = await readArtworkPayload(path.path as string, { path: true });
+      if (!payload) throw new Error(t('PA_ERROR_RETRIEVE_ASSET', 'The artwork could not be retrieved.'));
+      const normalized = await normalizeArtworkPayload(payload);
+      const activeFormat = String(await call<[string, string], string>('get_setting', 'library_cover_format', 'portrait')) === 'square' ? 'square' : 'portrait';
+      if (activeFormat === coverStyle) {
+        await changeAsset(normalized.data, 'grid_p', normalized.format, coverStyle);
+      } else {
+        await call('save_style_cover', app.appid, 0, normalized.format, normalized.data, coverStyle);
+      }
+      return;
+    }
     // One hero, one banner: a file chosen here replaces any Perfect composition too.
     if (assetType === 'hero' || assetType === 'grid_l') {
       await clearPerfectArtwork(app.appid, assetType);
@@ -175,6 +223,15 @@ const AssetSlot: FC<{
           <DialogButton
             disabled={busy}
             onClick={() => run(async () => {
+              if (coverStyle) {
+                await call('delete_style_cover', app.appid, coverStyle, '');
+                const activeFormat = String(await call<[string, string], string>('get_setting', 'library_cover_format', 'portrait')) === 'square' ? 'square' : 'portrait';
+                if (activeFormat === coverStyle) {
+                  await clearSteamArtworkSafely(app.appid, ASSET_TYPE.grid_p);
+                  await clearDerivedCoverBackup(app.appid);
+                }
+                return;
+              }
               // Restoring Steam's own artwork drops the Perfect composition with it.
               if (assetType === 'hero' || assetType === 'grid_l') {
                 await clearPerfectArtwork(app.appid, assetType);
@@ -231,7 +288,7 @@ const ManageTab: FC = () => {
   const { appId, appOverview } = useSGDB();
   const [startPath, setStartPath] = useState('/');
   const [overview, setOverview] = useState<AppStoreAppOverview>();
-  const [activeSlot, setActiveSlot] = useState<SGDBAssetType | null>(null);
+  const [activeSlot, setActiveSlot] = useState<SlotKey | null>(null);
 
   useEffect(() => {
     if (!appId) return;
@@ -257,15 +314,16 @@ const ManageTab: FC = () => {
         <Focusable className="pa-slots" flow-children="vertical">
           {SLOTS.map((slot) => (
             <AssetSlot
-              key={slot.assetType}
+              key={slot.slotKey}
               app={overview}
               assetType={slot.assetType}
+              coverStyle={slot.coverStyle}
               title={slot.title}
               hint={slot.hint}
               browseStartPath={startPath}
               editable={slot.assetType === 'icon' ? iconEditable : true}
-              active={activeSlot === slot.assetType}
-              onActivate={() => setActiveSlot(slot.assetType)}
+              active={activeSlot === slot.slotKey}
+              onActivate={() => setActiveSlot(slot.slotKey)}
               onDeactivate={() => setActiveSlot(null)}
             />
           ))}
