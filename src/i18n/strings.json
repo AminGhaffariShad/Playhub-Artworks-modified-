@@ -339,5 +339,17 @@
   "PA_CLEAN_UNUSED": "Clean unused artwork",
   "PA_CLEAN_UNUSED_DESC": "Remove cached Perfect Hero and Banner sources for removed games. Steam artwork and original backups are kept.",
   "PA_CLEAN_UNUSED_RESULT": "{count} files removed ({size} MiB).",
-  "PA_CLEAN_UNUSED_PARTIAL": "Unavailable libraries and files were kept. Please retry when Steam libraries are accessible."
+  "PA_CLEAN_UNUSED_PARTIAL": "Unavailable libraries and files were kept. Please retry when Steam libraries are accessible.",
+  "PA_VERTICAL_COVER": "Vertical cover",
+  "PA_VERTICAL_COVER_HINT": "Portrait cover (2:3), used in portrait library mode",
+  "PA_SQUARE_COVER": "Square cover",
+  "PA_SQUARE_COVER_HINT": "Square cover (1:1), used in square library mode",
+  "PA_ASSIGN_COVER_STYLE_TITLE": "Assign cover style",
+  "PA_ASSIGN_COVER_STYLE_DESC": "Save this cover for {gameName} as a Vertical cover or Square cover?",
+  "PA_SQUARE_COVER_APPLIED": "Square cover applied!",
+  "PA_VERTICAL_COVER_APPLIED": "Vertical cover applied!",
+  "PA_SQUARE_COVER_SAVED": "Saved as Square cover (applies when switching to Square).",
+  "PA_VERTICAL_COVER_SAVED": "Saved as Vertical cover (applies when switching to Portrait).",
+  "PA_RESTORE_HERO": "Restore Hero",
+  "PA_HERO_RESTORED": "Original hero, logo, and logo position restored."
 }
