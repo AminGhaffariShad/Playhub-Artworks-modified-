@@ -4,7 +4,7 @@ import {
   FC, useCallback, useEffect, useMemo, useRef, useState,
 } from 'react';
 import {
-  MdImage, MdOutlineBrandingWatermark, MdRefresh, MdVisibility, MdVisibilityOff, MdZoomIn, MdZoomOut,
+  MdAutoAwesome, MdImage, MdOutlineBrandingWatermark, MdRefresh, MdVisibility, MdVisibilityOff, MdZoomIn, MdZoomOut,
 } from 'react-icons/md';
 import { HiArrowDown, HiArrowLeft, HiArrowRight, HiArrowUp } from 'react-icons/hi2';
 
@@ -541,6 +541,13 @@ const ArtworkComposerModal: FC<{
     void persist().finally(() => closeModal?.());
   }, [closeModal, persist]);
 
+  const createNow = useCallback(() => {
+    if (closing.current || saving) return;
+    dirty.current = true;
+    closing.current = true;
+    void persist().finally(() => closeModal?.());
+  }, [closeModal, persist, saving]);
+
   useEffect(() => {
     const modal = modalRef.current;
     if (!modal) return;
@@ -684,6 +691,18 @@ const ArtworkComposerModal: FC<{
           </div>
 
           <Focusable className="pa-editor-controls" flow-children="vertical">
+            <Focusable className="pa-editor-row" flow-children="horizontal">
+              <DialogButton
+                data-pa-create="true"
+                disabled={saving || !backgroundSource}
+                onClick={createNow}
+                style={{ background: '#f2b526', color: '#171717', fontWeight: 700 }}
+              >
+                <MdAutoAwesome />
+                <span>{saving ? t('PA_SAVING', 'Saving…') : (target === 'hero' ? t('PA_CREATE_HERO_BTN', 'Create Hero') : t('PA_CREATE_BANNER_BTN', 'Create Banner'))}</span>
+              </DialogButton>
+            </Focusable>
+
             <span className="pa-editor-label">{t('PA_WHAT_EDIT', 'What do you want to edit?')}</span>
             {/* Logo first, on the left: it is what the editor is opened for. */}
             <Focusable className="pa-editor-row" flow-children="horizontal">
@@ -707,9 +726,13 @@ const ArtworkComposerModal: FC<{
             </Focusable>
             <Focusable className="pa-editor-row" flow-children="horizontal">
               <DialogButton
-                 onClick={() => setUseLocalCustomHero(!useLocalCustomHero)}
-                 className={useLocalCustomHero ? 'active' : ''}>
-                 <span>Use Current Artwork</span>
+                onClick={() => {
+                  dirty.current = true;
+                  setUseLocalCustomHero(!useLocalCustomHero);
+                }}
+                className={useLocalCustomHero ? 'active' : ''}
+              >
+                <span>Use Current Artwork</span>
               </DialogButton>
             </Focusable>
 
