@@ -9,7 +9,7 @@ jobs:
   create-release:
     permissions:
       contents: write
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.create-release.outputs.result }}
       tag: ${{ steps.create-release.outputs.tag }}
@@ -37,7 +37,7 @@ jobs:
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              tag_name: `pre-${process.env.PACKAGE_VERSION}`,
+              tag_name: `pre-${process.env.PACKAGE_VERSION}-${process.env.COMMIT_HASH}`,
               name: `Playhub Artworks pre-${process.env.PACKAGE_VERSION}#${process.env.COMMIT_HASH}`,
               body: `Download the release platform below`,
               draft: true,
@@ -52,7 +52,7 @@ jobs:
     needs: create-release
     permissions:
       contents: write
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
@@ -171,14 +171,14 @@ jobs:
     needs: [create-release, build-plugin]
     permissions:
       contents: write
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
-          ref: "dev"
+          ref: "pre-release"
 
       - name: Publish Release
         id: publish-release
