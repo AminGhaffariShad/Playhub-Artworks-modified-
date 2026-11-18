@@ -691,17 +691,15 @@ const ArtworkComposerModal: FC<{
           </div>
 
           <Focusable className="pa-editor-controls" flow-children="vertical">
-            <Focusable className="pa-editor-row" flow-children="horizontal">
-              <DialogButton
-                data-pa-create="true"
-                disabled={saving || !backgroundSource}
-                onClick={createNow}
-                style={{ background: '#f2b526', color: '#171717', fontWeight: 700 }}
-              >
-                <MdAutoAwesome />
-                <span>{saving ? t('PA_SAVING', 'Saving…') : (target === 'hero' ? t('PA_CREATE_HERO_BTN', 'Create Hero') : t('PA_CREATE_BANNER_BTN', 'Create Banner'))}</span>
-              </DialogButton>
-            </Focusable>
+            <DialogButton
+              className="pa-editor-wide active"
+              disabled={saving || !backgroundSource}
+              onClick={createNow}
+              style={{ background: '#f2b526', color: '#171717' }}
+            >
+              <MdAutoAwesome />
+              <span style={{ fontWeight: 700 }}>{saving ? t('PA_SAVING', 'Saving…') : (target === 'hero' ? t('PA_CREATE_PERFECT_HERO', 'Create Perfect Hero') : t('PA_CREATE_PERFECT_BANNER', 'Create Perfect Banner'))}</span>
+            </DialogButton>
 
             <span className="pa-editor-label">{t('PA_WHAT_EDIT', 'What do you want to edit?')}</span>
             {/* Logo first, on the left: it is what the editor is opened for. */}
