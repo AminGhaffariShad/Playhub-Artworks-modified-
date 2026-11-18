@@ -6,7 +6,7 @@ export default class PluginErrorBoundary extends Component<
   { area: string; children?: ReactNode }, { failed: boolean; errorMessage: string }
 > {
   state = { failed: false, errorMessage: '' };
-  static getDerivedStateFromError(error: Error) {
+  static getDerivedStateFromError(error: any) {
     return { failed: true, errorMessage: String(error?.message ?? error ?? '') };
   }
   componentDidCatch(error: Error, info: { componentStack?: string | null }) {
