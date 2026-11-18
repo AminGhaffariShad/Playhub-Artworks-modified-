@@ -157,12 +157,9 @@ jobs:
               copyDirRecursive("dist", distContents, `bundle${path.sep}Playhub-Artworks${path.sep}dist`);
             }
 
-            // * zip
-            child_process.execSync("pnpm i zip-a-folder");
-            const { zip, COMPRESSION_LEVEL } = require('zip-a-folder');
-
+            // * zip using system zip utility (avoids @napi-rs/lzma native binding issues)
             const outputZipPath = path.join(cwdPath, "bundle.zip");
-            await zip(bundleWrapperPath, outputZipPath, {compression: COMPRESSION_LEVEL.high});
+            child_process.execFileSync("zip", ["-r", "-9", outputZipPath, "."], { cwd: bundleWrapperPath });
 
             // * upload to release
             await uploadReleaseAsset(`Playhub-Artworks_${process.env.release_tag}.zip`, fs.readFileSync(outputZipPath));
