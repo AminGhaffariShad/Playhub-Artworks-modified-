@@ -13,7 +13,8 @@ import { artworkSources, steamOwnArtworkSources, useArtworkPreview } from '../ut
 import MenuIcon from '../components/Icons/MenuIcon';
 import log from '../utils/log';
 import t, { localizeError } from '../utils/i18n';
-import { getPerfectSource, isPerfectArtwork, preservePerfectSource } from '../utils/perfectArtwork';
+import { artworkPayloadUrl, readArtworkPayload } from '../utils/artworkTransfer';
+import { backupPerfectHeroState, getPerfectSource, isPerfectArtwork, preservePerfectSource } from '../utils/perfectArtwork';
 import {
   canvasToBase64,
   loadSafeImage,
@@ -212,6 +213,32 @@ const ArtworkComposerModal: FC<{
   const currentCandidates = useMemo(() => (app ? artworkSources(app, assetKind) : []), [app, assetKind]);
   const originalCandidates = useMemo(() => (app ? steamOwnArtworkSources(app, assetKind) : []), [app, assetKind]);
 
+  const [useLocalCustomHero, setUseLocalCustomHero] = useState(false);
+  const [localHeroUrl, setLocalHeroUrl] = useState('');
+  const [localLogoUrl, setLocalLogoUrl] = useState('');
+
+  useEffect(() => {
+    if (!appId) return;
+    let active = true;
+    void (async () => {
+      try {
+        const res = await call<[number, string, string], { path?: string }>('get_local_asset_info', appId, assetKind, '');
+        if (active && res?.path) {
+          const payload = await readArtworkPayload(res.path, { path: true, staticOnly: true });
+          if (active && payload) setLocalHeroUrl(artworkPayloadUrl(payload));
+        }
+      } catch (_) { /* Optional local hero */ }
+      try {
+        const res = await call<[number, string, string], { path?: string }>('get_local_asset_info', appId, 'logo', '');
+        if (active && res?.path) {
+          const payload = await readArtworkPayload(res.path, { path: true, staticOnly: true });
+          if (active && payload) setLocalLogoUrl(artworkPayloadUrl(payload));
+        }
+      } catch (_) { /* Optional local logo */ }
+    })();
+    return () => { active = false; };
+  }, [appId, assetKind]);
+
   const [composed, setComposed] = useState<boolean | null>(null);
   const [zazaBackground, setZazaBackground] = useState(false);
   useEffect(() => {
@@ -246,8 +273,8 @@ const ArtworkComposerModal: FC<{
   }, [composed, currentCandidates, originalCandidates, zazaBackground]);
 
   const steamBackground = useArtworkPreview(backgroundCandidates);
-  const logoCandidates = useMemo(() => (app && logoPreferenceReady && !logoHidden ? artworkSources(app, 'logo') : []), [app, logoPreferenceReady, logoHidden]);
-  const logoSource = useArtworkPreview(logoCandidates);
+  const steamLogoSource = useArtworkPreview(logoCandidates);
+  const logoSource = useLocalCustomHero && localLogoUrl ? localLogoUrl : steamLogoSource;
 
   /*
     The logo stays selected unless the game genuinely has none.
@@ -309,6 +336,12 @@ const ArtworkComposerModal: FC<{
     void (async () => {
       const stored = await getPerfectSource(appId, target);
       if (!active) return;
+      if (useLocalCustomHero && localHeroUrl) {
+         setBackgroundSource(localHeroUrl);
+         setSourceReady(true);
+         return;
+      }
+
       if (stored) {
         /*
           Which picture the editor started from, in the log.
@@ -348,7 +381,7 @@ const ArtworkComposerModal: FC<{
       }
     })();
     return () => { active = false; };
-  }, [appId, target, steamBackground, composed, currentCandidates, originalCandidates, zazaBackground]);
+  }, [appId, target, steamBackground, composed, currentCandidates, originalCandidates, zazaBackground, useLocalCustomHero, localHeroUrl]);
 
   const placement = useMemo(
     () => backgroundPlacement(backgroundNatural, background, spec),
@@ -459,6 +492,10 @@ const ArtworkComposerModal: FC<{
             sourceBackup.current,
             new Promise((resolve) => window.setTimeout(resolve, 500)),
           ]);
+        }
+
+        if (target === 'hero') {
+          await backupPerfectHeroState(appId);
         }
 
         await onSave(composition.data, spec.format, Boolean(state.logoSource));
@@ -665,6 +702,13 @@ const ArtworkComposerModal: FC<{
                 onClick={() => setLayer('background')}
               >
                 <MdImage /><span>{t('PA_BACKGROUND', 'Background')}</span>
+              </DialogButton>
+            </Focusable>
+            <Focusable className="pa-editor-row" flow-children="horizontal">
+              <DialogButton
+                 onClick={() => setUseLocalCustomHero(!useLocalCustomHero)}
+                 className={useLocalCustomHero ? 'active' : ''}>
+                 <span>Use Current Artwork</span>
               </DialogButton>
             </Focusable>
 
