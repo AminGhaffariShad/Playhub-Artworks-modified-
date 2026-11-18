@@ -14,7 +14,7 @@ import {
   MdTune,
   MdWallpaper,
 } from 'react-icons/md';
-import { HiEye, HiEyeSlash, HiTrash } from 'react-icons/hi2';
+import { HiArrowUturnLeft, HiEye, HiEyeSlash, HiTrash } from 'react-icons/hi2';
 import { FaSlidersH, FaSteam } from 'react-icons/fa';
 
 import useAssetSearch from '../../hooks/useAssetSearch';
@@ -29,7 +29,7 @@ import OfficialAssetsModal from '../../modals/OfficialAssetsModal';
 import MenuIcon from '../Icons/MenuIcon';
 import t, { localizeError } from '../../utils/i18n';
 import { hideLogo, isLogoHidden, showLogo } from '../../utils/logoControl';
-import { clearPerfectArtwork, isPerfectArtwork, markPerfectArtwork } from '../../utils/perfectArtwork';
+import { clearPerfectArtwork, hasPerfectHeroBackup, isPerfectArtwork, markPerfectArtwork, restorePerfectHero } from '../../utils/perfectArtwork';
 
 import ManageTab from './ManageTab';
 import AssetTab from './AssetTab';
@@ -80,6 +80,7 @@ const AssetTabs: FC<{
   const [hiddenTabs, setHiddenTabs] = useState<string[]>([]);
   const [logoHidden, setLogoHidden] = useState(false);
   const [perfect, setPerfect] = useState<{ hero: boolean; grid_l: boolean }>({ hero: false, grid_l: false });
+  const [canRestoreHero, setCanRestoreHero] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -107,11 +108,13 @@ const AssetTabs: FC<{
 
   const refreshPerfect = useCallback(async () => {
     if (!appOverview?.appid) return;
-    const [hero, banner] = await Promise.all([
+    const [hero, banner, heroBackup] = await Promise.all([
       isPerfectArtwork(appOverview.appid, 'hero'),
       isPerfectArtwork(appOverview.appid, 'grid_l'),
+      hasPerfectHeroBackup(appOverview.appid),
     ]);
     setPerfect({ hero, grid_l: banner });
+    setCanRestoreHero(heroBackup);
   }, [appOverview?.appid]);
 
   useEffect(() => { void refreshPerfect(); }, [refreshPerfect]);
@@ -237,6 +240,23 @@ const AssetTabs: FC<{
     }
   };
 
+  const restoreHero = async () => {
+    try {
+      const restored = await restorePerfectHero(appOverview.appid);
+      if (!restored) return;
+      await refreshPerfect();
+      setLogoHidden(await isLogoHidden(appOverview.appid));
+      toaster.toast({
+        title: appOverview.display_name,
+        body: t('PA_HERO_RESTORED', 'Original hero, logo, and logo position restored.'),
+        icon: <MenuIcon />,
+        duration: 2200,
+      });
+    } catch (error: any) {
+      toaster.toast({ title: t('PA_REMOVE_FAILED', 'Restore failed'), body: localizeError(error, 'PA_TRY_AGAIN'), icon: <MenuIcon fill="#ff5d5d" /> });
+    }
+  };
+
   const openOfficialAssets = () => showModal((
     <OfficialAssetsModal
       onAssetChange={async (url) => {
@@ -338,6 +358,11 @@ const AssetTabs: FC<{
                   onClick={() => showModal(<LogoPositionerModal appId={appOverview.appid} />, window)}
                 >
                   <MdTune /><span>{t('PA_POSITION_LOGO', "Position logo")}</span>
+                </DialogButton>
+              )}
+              {assetType === 'hero' && (perfect.hero || canRestoreHero) && (
+                <DialogButton className="pa-action" onClick={() => void restoreHero()}>
+                  <HiArrowUturnLeft /><span>{t('PA_RESTORE_HERO', 'Restore Hero')}</span>
                 </DialogButton>
               )}
               {perfect[composerTarget] && (

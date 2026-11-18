@@ -12,7 +12,7 @@ import useAssetSearch from '../../hooks/useAssetSearch';
 import useSettings from '../../hooks/useSettings';
 import { artworkJobKey, isArtworkTargetBusy, useArtworkJobs } from '../../utils/artworkJobStore';
 import { isZazaMastroAsset } from '../../utils/zazamastroBatch';
-import { clearPerfectArtwork, markPerfectArtwork } from '../../utils/perfectArtwork';
+import { backupPerfectHeroState, clearPerfectArtwork, markPerfectArtwork } from '../../utils/perfectArtwork';
 
 const AssetTab: FC<{ assetType: SGDBAssetType; onArtworkApplied?: () => void }> = ({ assetType, onArtworkApplied }) => {
   const { get } = useSettings();
@@ -42,6 +42,10 @@ const AssetTab: FC<{ assetType: SGDBAssetType; onArtworkApplied?: () => void }> 
         the untouched source it was built from - so the next edit starts from THIS artwork
         instead of quietly re-composing the old one.
       */
+
+      if (zazaHero) {
+        await backupPerfectHeroState(appOverview.appid);
+      }
       await changeAssetFromUrl(asset.url, assetType);
       // Do not discard the original/visibility state until replacement actually succeeds.
       if (assetType === 'hero' || assetType === 'grid_l') {

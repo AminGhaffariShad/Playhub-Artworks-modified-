@@ -8,7 +8,7 @@ import { ASSET_TYPE } from '../../constants';
 import useSGDB from '../../hooks/useSGDB';
 import MenuIcon from '../Icons/MenuIcon';
 import getAppOverview from '../../utils/getAppOverview';
-import { clearPerfectArtwork } from '../../utils/perfectArtwork';
+import { clearPerfectArtwork, hasPerfectHeroBackup, isPerfectArtwork, restorePerfectHero } from '../../utils/perfectArtwork';
 import openFilePicker, { isFilePickerCancelled } from '../../utils/openFilePicker';
 import { artworkSources, useArtworkPreview } from '../../utils/artworkSources';
 import {
@@ -42,30 +42,41 @@ const AssetSlot: FC<{
   const [reloadKey, setReloadKey] = useState(0);
   const [busy, setBusy] = useState(false);
   const [derivedCover, setDerivedCover] = useState(false);
+  const [restorableHero, setRestorableHero] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
 
   const preview = useArtworkPreview(artworkSources(overview, assetType), reloadKey);
 
   const refresh = useCallback(async () => {
     await new Promise((resolve) => setTimeout(resolve, 400));
-    const [next, backup] = await Promise.all([
+    const [next, backup, heroBackup, heroPerfect] = await Promise.all([
       getAppOverview(app.appid),
       assetType === 'grid_p' ? getDerivedCoverBackupInfo(app.appid) : Promise.resolve(null),
+      assetType === 'hero' ? hasPerfectHeroBackup(app.appid) : Promise.resolve(false),
+      assetType === 'hero' ? isPerfectArtwork(app.appid, 'hero') : Promise.resolve(false),
     ]);
     if (next) setOverview(next);
     setDerivedCover(Boolean(backup?.recoverable ?? backup?.is_derived));
+    setRestorableHero(Boolean(heroBackup || heroPerfect));
     setReloadKey((value) => value + 1);
   }, [app.appid, assetType]);
 
   useEffect(() => {
     let active = true;
-    if (assetType !== 'grid_p') {
+    if (assetType === 'grid_p') {
+      setRestorableHero(false);
+      void getDerivedCoverBackupInfo(app.appid).then((backup) => {
+        if (active) setDerivedCover(Boolean(backup.recoverable ?? backup.is_derived));
+      });
+    } else if (assetType === 'hero') {
       setDerivedCover(false);
-      return () => { active = false; };
+      void Promise.all([hasPerfectHeroBackup(app.appid), isPerfectArtwork(app.appid, 'hero')]).then(([heroBackup, heroPerfect]) => {
+        if (active) setRestorableHero(Boolean(heroBackup || heroPerfect));
+      });
+    } else {
+      setDerivedCover(false);
+      setRestorableHero(false);
     }
-    void getDerivedCoverBackupInfo(app.appid).then((backup) => {
-      if (active) setDerivedCover(Boolean(backup.recoverable ?? backup.is_derived));
-    });
     return () => { active = false; };
   }, [app.appid, assetType]);
 
@@ -186,6 +197,24 @@ const AssetSlot: FC<{
               onOKActionDescription={t('PA_RESTORE_DERIVED_COVER', 'Restore previous cover')}
             >
               <HiArrowUturnLeft /><span>{t('PA_RESTORE_DERIVED_COVER', 'Restore previous cover')}</span>
+            </DialogButton>
+          )}
+          {assetType === 'hero' && restorableHero && (
+            <DialogButton
+              disabled={busy}
+              onClick={() => run(async () => {
+                const restored = await restorePerfectHero(app.appid);
+                if (restored) {
+                  toaster.toast({
+                    title: 'Playhub Artworks',
+                    body: t('PA_HERO_RESTORED', 'Original hero, logo, and logo position restored.'),
+                    icon: <MenuIcon />,
+                  });
+                }
+              })}
+              onOKActionDescription={t('PA_RESTORE_HERO', 'Restore Hero')}
+            >
+              <HiArrowUturnLeft /><span>{t('PA_RESTORE_HERO', 'Restore Hero')}</span>
             </DialogButton>
           )}
         </Focusable>
