@@ -1,7 +1,12 @@
 import { artworkPayloadUrl, readArtworkPayload } from './artworkTransfer';
 import { call } from '@decky/api';
 
-import { hideLogo, showLogo } from './logoControl';
+import { ASSET_TYPE } from '../constants';
+import { clearSteamArtworkSafely, runSteamArtworkTransaction } from './derivedCover';
+import getCurrentSteamUserId from './getCurrentSteamUserId';
+import { hideLogo, readLogoPosition, resetLogoPosition, showLogo, writeLogoPosition } from './logoControl';
+import { normalizeArtworkPayload } from './normalizeArtworkPayload';
+import { isRuntimeActive } from './runtimeLifecycle';
 
 export type PerfectTarget = 'hero' | 'grid_l';
 
@@ -128,6 +133,117 @@ export const markPerfectArtwork = async (appId: number, target: PerfectTarget, w
   return false;
 };
 
+export interface PerfectHeroRestorePlan {
+  exists: boolean;
+  hero_action?: 'set' | 'clear';
+  hero_path?: string;
+  logo_action?: 'set' | 'clear' | 'keep';
+  logo_path?: string;
+  logo_position?: LogoPosition | null;
+}
+
+/**
+ * Snapshot the currently applied hero, logo, and logo size/position before
+ * applying a Perfect Hero, so "Restore Hero" can bring all three back intact.
+ */
+export const backupPerfectHeroState = async (appId: number, overwrite = false): Promise<boolean> => {
+  let steamUser = '';
+  try { steamUser = getCurrentSteamUserId(); } catch (_) { /* Backend resolves active user. */ }
+  let currentPosition: LogoPosition | null = null;
+  try {
+    const pos = await readLogoPosition(appId);
+    if (pos && pos.nWidthPct > 0.02 && pos.nHeightPct > 0.02) {
+      currentPosition = pos;
+    }
+  } catch (_) { /* Backend falls back to grid/<appid>.json or stored backup. */ }
+
+  const res = await safeCall<{ saved?: boolean }>(
+    { saved: false },
+    'backup_perfect_hero_state',
+    appId,
+    steamUser,
+    currentPosition,
+    overwrite
+  );
+  return Boolean(res?.saved);
+};
+
+export const hasPerfectHeroBackup = async (appId: number): Promise<boolean> => {
+  const info = await safeCall<{ exists?: boolean }>(
+    { exists: false },
+    'get_perfect_hero_backup_info',
+    appId
+  );
+  return Boolean(info?.exists);
+};
+
+const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+const applyLocalBackupAsset = async (appId: number, assetType: SGDBAssetType, path: string): Promise<void> => {
+  const payload = await readArtworkPayload(path, { path: true });
+  if (!payload?.data) throw new Error('PA_ERROR_RETRIEVE_ASSET');
+  const normalized = await normalizeArtworkPayload(payload);
+  await runSteamArtworkTransaction(async (mutate) => {
+    if (!isRuntimeActive()) throw new DOMException('Aborted', 'AbortError');
+    await mutate(
+      'Clear artwork timeout',
+      () => SteamClient.Apps.ClearCustomArtworkForApp(appId, ASSET_TYPE[assetType]),
+    );
+    await delay(180);
+    await mutate(
+      'Set artwork timeout',
+      () => SteamClient.Apps.SetCustomArtworkForApp(
+        appId,
+        normalized.data,
+        normalized.format,
+        ASSET_TYPE[assetType],
+      ),
+    );
+  });
+};
+
+/**
+ * Restore the exact hero, logo, and logo size & position that were applied
+ * before the Perfect Hero was created.
+ */
+export const restorePerfectHero = async (appId: number): Promise<boolean> => {
+  const plan = await safeCall<PerfectHeroRestorePlan>(
+    { exists: false },
+    'prepare_perfect_hero_restore_payload',
+    appId
+  );
+  if (!plan?.exists) return false;
+
+  // 1. Restore pre-Perfect-Hero hero
+  if (plan.hero_action === 'set' && plan.hero_path) {
+    await applyLocalBackupAsset(appId, 'hero', plan.hero_path);
+  } else if (plan.hero_action === 'clear') {
+    await clearSteamArtworkSafely(appId, ASSET_TYPE.hero);
+  }
+
+  // 2. Restore pre-Perfect-Hero logo
+  if (plan.logo_action === 'set' && plan.logo_path) {
+    await applyLocalBackupAsset(appId, 'logo', plan.logo_path);
+  } else if (plan.logo_action === 'clear') {
+    await clearSteamArtworkSafely(appId, ASSET_TYPE.logo);
+  }
+
+  // 3. Restore pre-Perfect-Hero logo size and position
+  await safeCall(false, 'set_setting', `logo_hidden_${appId}`, false);
+  await safeCall(false, 'set_setting', `logo_visible_${appId}`, true);
+  if (plan.logo_position && plan.logo_position.pinnedPosition) {
+    await writeLogoPosition(appId, plan.logo_position);
+  } else {
+    await resetLogoPosition(appId);
+  }
+
+  // 4. Clean up Perfect Hero markers and backup
+  sourceReads.delete(key(appId, 'hero'));
+  sourceWrites.delete(key(appId, 'hero'));
+  await safeCall(false, 'complete_perfect_hero_restore', appId);
+  return true;
+};
+
 /** Back to Steam's own artwork plus the separate logo. */
 export const clearPerfectArtwork = async (appId: number, target: PerfectTarget) => {
   sourceReads.delete(key(appId, target));
@@ -137,6 +253,8 @@ export const clearPerfectArtwork = async (appId: number, target: PerfectTarget) 
   await safeCall(false, 'delete_setting', `perfect_${target}_info_${appId}`);
   if (target === 'hero') {
     await safeCall(false, 'delete_setting', `zazamastro_hero_${appId}`);
+    await safeCall(false, 'delete_setting', `manual_zazamastro_hero_${appId}`);
+    await safeCall(false, 'clear_perfect_hero_backup', appId);
   }
   if (!await hasPerfectLogoComposition(appId)) await showLogo(appId);
 };
