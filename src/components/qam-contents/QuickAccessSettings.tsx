@@ -69,6 +69,8 @@ const COVER_CARDS: Array<{
   missingLabel?: string;
   replaceLabel?: string;
   replaceConfirm?: { title: string; body: string; ok: string };
+  localOnlyReplace?: ZazaBatchKind;
+  restoreKind?: ZazaBatchKind;
 }> = [
   {
     shape: 'portrait',
@@ -97,6 +99,8 @@ const COVER_CARDS: Array<{
       body: t('PA_REMAKE_PERFECT_HERO_DESC', 'All existing Perfect Heroes, including manual ones, will be deleted before rebuilding. Saved backgrounds and completion flags will also be cleared. If rebuilding fails or is cancelled, removed heroes stay removed and the separate logo is restored. Covers, banners and icons are not deleted.'),
       ok: t('PA_REBUILD', 'Rebuild'),
     },
+    localOnlyReplace: 'perfectHeroLocal',
+    restoreKind: 'perfectHeroRestore',
   },
 ];
 
@@ -245,7 +249,7 @@ const QuickAccessSettings: VFC = () => {
 
   const runBulk = useCallback(async (kind: ZazaBatchKind, label: string) => {
     if (batchProgress?.running) return;
-    if (kind !== 'resetArtwork') {
+    if (kind !== 'resetArtwork' && kind !== 'perfectHeroLocal' && kind !== 'perfectHeroRestore') {
       const configuredKey = apiKey.trim() || await readApiKey();
       if (!configuredKey) {
         toaster.toast({ title: t('PA_KEY_MISSING', "Missing key"), body: t('PA_ENTER_KEY', "Enter your SteamGridDB key."), icon: <FaKey /> });
@@ -313,7 +317,7 @@ const QuickAccessSettings: VFC = () => {
     if (cleaningArtwork || batchProgress?.running) return;
     setCleaningArtwork(true);
     try {
-      const result = await call<{ removed: number; bytes: number; errors: number; inventoryComplete: boolean }>('clean_unused_artwork');
+      const result = await call<[], { removed: number; bytes: number; errors: number; inventoryComplete: boolean }>('clean_unused_artwork');
       const summary = t('PA_CLEAN_UNUSED_RESULT', '{count} files removed ({size} MiB).')
         .replace('{count}', String(result.removed)).replace('{size}', (result.bytes / 1048576).toFixed(1));
       toaster.toast({ title: t('PA_CLEAN_UNUSED', 'Clean unused artwork'),
@@ -424,10 +428,45 @@ const QuickAccessSettings: VFC = () => {
                 >
                   {card.replaceLabel ?? t('PA_APPLY_REPLACE', "Apply and replace")}
                 </DialogButton>
+                {card.localOnlyReplace && (
+                   <DialogButton
+                     disabled={batchProgress?.running}
+                     onClick={() => startAction({
+                       kind: card.localOnlyReplace as ZazaBatchKind,
+                       title: `Build Perfect Heroes (Local)`,
+                       description: '',
+                       icon: <FaImage />,
+                       confirm: {
+                         title: 'Build Perfect Heroes from local artwork?',
+                         body: 'Creates Perfect Heroes using each game’s currently installed hero and logo without downloading from the internet. Existing heroes and logos are backed up first so you can restore them anytime.',
+                         ok: 'Build (Local)',
+                       },
+                     })}
+                   >
+                     Rebuild (Local)
+                   </DialogButton>
+                )}
+                {card.restoreKind && (
+                   <DialogButton
+                     disabled={batchProgress?.running}
+                     onClick={() => startAction({
+                       kind: card.restoreKind as ZazaBatchKind,
+                       title: `Restore Original Heroes`,
+                       description: '',
+                       icon: <FaImage />
+                     })}
+                   >
+                     Restore Original Heroes
+                   </DialogButton>
+                )}
               </Focusable>
 
-              {(batchProgress?.kind === card.missingKind || batchProgress?.kind === card.replaceKind)
-                && <Progress value={batchProgress} />}
+              {batchProgress && (
+                batchProgress.kind === card.missingKind
+                || batchProgress.kind === card.replaceKind
+                || (Boolean(card.localOnlyReplace) && batchProgress.kind === card.localOnlyReplace)
+                || (Boolean(card.restoreKind) && batchProgress.kind === card.restoreKind)
+              ) && <Progress value={batchProgress} />}
             </div>
           ))}
 
