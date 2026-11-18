@@ -111,6 +111,7 @@ interface PreparedBulkArtwork {
   name: string;
   result: 'ready' | 'skipped';
   assetType?: SGDBAssetType;
+  coverShape?: 'square' | 'portrait';
   data?: string;
   format?: string;
   animated?: boolean;
@@ -1175,23 +1176,26 @@ const prepareBulkArtwork = async (
       ? 'grid_l'
       : 'logo';
 
-  // The cheapest test first: a game that already satisfies the request never
-  // wakes Steam's details store and never contacts a source.
+  const targetCoverShape = cover ? (shapeForKind(kind) as 'square' | 'portrait') : undefined;
+
+  if (cover && !replacesExisting(kind) && targetCoverShape) {
+    const alreadyStored = await call<[number, string, string], boolean>(
+      'has_style_cover',
+      rawApp.appid,
+      targetCoverShape,
+      ''
+    ).catch(() => false);
+    if (alreadyStored) {
+      return { app: rawApp, name: label, result: 'skipped', skipReason: `${targetCoverShape} cover already stored` };
+    }
+  }
+
+  // Next check active Steam cover: if it already matches the requested shape,
+  // snapshot it into the style slot and skip downloading a duplicate.
   const local = await getLocalAssetInfo(rawApp.appid, assetType);
 
-  /*
-    "Only the missing ones" stops here when a cover already exists. "Apply and replace"
-    goes on and overwrites - but the current cover is only cleared once a replacement has
-    actually been found and downloaded, so a game no source covers keeps what it had.
-  */
-  /*
-    "Missing" is judged per SHAPE, not per artwork.
-
-    A game with a vertical cover is missing a square one, so the square job replaces it -
-    and the other way round. Only a cover already in the requested shape counts as done.
-    "Apply and replace" ignores all of this and redoes every game of that shape.
-  */
-  if (cover && !replacesExisting(kind) && local.exists && coverMatchesShape(local, shapeForKind(kind))) {
+  if (cover && !replacesExisting(kind) && targetCoverShape && local.exists && coverMatchesShape(local, targetCoverShape)) {
+    await call('snapshot_active_cover_to_style', rawApp.appid, targetCoverShape, '').catch(() => undefined);
     return { app: rawApp, name: label, result: 'skipped', skipReason: 'cover already has this shape' };
   }
   if (kind === 'banner920' && local.exists && local.width && local.height && local.width >= 920 && local.height >= 430) {
@@ -1225,6 +1229,7 @@ const prepareBulkArtwork = async (
     name,
     result: 'ready',
     assetType,
+    coverShape: targetCoverShape,
     data: payload.data,
     format: payload.format,
     animated: payload.animated,
@@ -1235,6 +1240,35 @@ const applyPreparedBulkArtwork = async (prepared: PreparedBulkArtwork): Promise<
   if (prepared.result === 'skipped') return 'skipped';
   if (!prepared.assetType || !prepared.data) {
     throw new Error(t('PA_ERROR_INTERNAL_ARTWORK', 'The artwork operation could not be completed.'));
+  }
+
+  if (prepared.assetType === 'grid_p' && prepared.coverShape) {
+    const normalized = await normalizeArtworkPayload({
+      data: prepared.data,
+      format: prepared.format || 'png',
+      animated: prepared.animated,
+    });
+    await call(
+      'save_style_cover',
+      prepared.app.appid,
+      0,
+      normalized.format,
+      normalized.data,
+      prepared.coverShape,
+      ''
+    ).catch(() => undefined);
+
+    const storedShape = await call<[string, string], string>('get_setting', 'library_cover_format', 'portrait').catch(() => 'portrait');
+    const activeShape = storedShape === 'square' ? 'square' : 'portrait';
+    const currentGrid = await getLocalAssetInfo(prepared.app.appid, 'grid_p');
+    if (activeShape === prepared.coverShape || !currentGrid.exists) {
+      await applyDownloadedAsset(
+        prepared.app.appid,
+        'grid_p',
+        { data: normalized.data, format: normalized.format, animated: prepared.animated }
+      );
+    }
+    return 'changed';
   }
 
   const apply = () => applyDownloadedAsset(
