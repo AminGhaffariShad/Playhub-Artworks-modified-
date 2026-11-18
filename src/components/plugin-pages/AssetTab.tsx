@@ -43,6 +43,7 @@ const AssetTab: FC<{ assetType: SGDBAssetType; onArtworkApplied?: () => void }> 
         instead of quietly re-composing the old one.
       */
 
+      const zazaHero = assetType === 'hero' && isZazaMastroAsset(asset);
       if (zazaHero) {
         await backupPerfectHeroState(appOverview.appid);
       }
@@ -56,7 +57,6 @@ const AssetTab: FC<{ assetType: SGDBAssetType; onArtworkApplied?: () => void }> 
         A ZazaMastro hero already has the logo painted into it, so Steam's separate
         logo layer has to go or the game page shows it twice.
       */
-      const zazaHero = assetType === 'hero' && isZazaMastroAsset(asset);
       if (assetType === 'hero') {
         if (zazaHero) {
           await call('set_setting', `manual_zazamastro_hero_${appOverview.appid}`, true);
