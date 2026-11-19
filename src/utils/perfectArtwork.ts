@@ -177,6 +177,27 @@ export const hasPerfectHeroBackup = async (appId: number): Promise<boolean> => {
   return Boolean(info?.exists);
 };
 
+export const backupPerfectHeroComposition = async (appId: number): Promise<boolean> => {
+  let steamUser = '';
+  try { steamUser = getCurrentSteamUserId(); } catch (_) { /* Backend resolves active user. */ }
+  const res = await safeCall<{ saved?: boolean }>(
+    { saved: false },
+    'backup_perfect_hero_composition',
+    appId,
+    steamUser
+  );
+  return Boolean(res?.saved);
+};
+
+export const hasSavedPerfectHero = async (appId: number): Promise<boolean> => {
+  const info = await safeCall<{ exists?: boolean }>(
+    { exists: false },
+    'get_saved_perfect_hero_info',
+    appId
+  );
+  return Boolean(info?.exists);
+};
+
 const delay = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 const applyLocalBackupAsset = async (appId: number, assetType: SGDBAssetType, path: string): Promise<void> => {
@@ -214,6 +235,11 @@ export const restorePerfectHero = async (appId: number): Promise<boolean> => {
   );
   if (!plan?.exists) return false;
 
+  // 0. Automatically snapshot the active Perfect Hero first so it can be restored anytime
+  if (await isPerfectArtwork(appId, 'hero')) {
+    await backupPerfectHeroComposition(appId);
+  }
+
   // 1. Restore pre-Perfect-Hero hero
   if (plan.hero_action === 'set' && plan.hero_path) {
     await applyLocalBackupAsset(appId, 'hero', plan.hero_path);
@@ -237,10 +263,39 @@ export const restorePerfectHero = async (appId: number): Promise<boolean> => {
     await resetLogoPosition(appId);
   }
 
-  // 4. Clean up Perfect Hero markers and backup
+  // 4. Clear active Perfect Hero markers (preserving backups for toggling back and forth)
   sourceReads.delete(key(appId, 'hero'));
   sourceWrites.delete(key(appId, 'hero'));
   await safeCall(false, 'complete_perfect_hero_restore', appId);
+  return true;
+};
+
+/**
+ * Restore a previously backed-up Perfect Hero image and re-hide Steam's separate logo layer.
+ * Snapshots the current original hero/logo/position first so switching back stays lossless.
+ */
+export const restoreSavedPerfectHero = async (appId: number): Promise<boolean> => {
+  const plan = await safeCall<{ exists?: boolean; hero_path?: string; with_logo?: boolean }>(
+    { exists: false },
+    'prepare_saved_perfect_hero_restore',
+    appId
+  );
+  if (!plan?.exists || !plan.hero_path) return false;
+
+  // Snapshot current original hero, logo, and logo position before overwriting
+  await backupPerfectHeroState(appId, true);
+
+  // Apply the backed-up Perfect Hero image
+  await applyLocalBackupAsset(appId, 'hero', plan.hero_path);
+
+  // Re-hide Steam's separate logo layer if this Perfect Hero includes a baked logo
+  if (plan.with_logo !== false) {
+    await hideLogo(appId);
+  }
+
+  sourceReads.delete(key(appId, 'hero'));
+  sourceWrites.delete(key(appId, 'hero'));
+  await safeCall(false, 'complete_saved_perfect_hero_restore', appId);
   return true;
 };
 
@@ -255,6 +310,7 @@ export const clearPerfectArtwork = async (appId: number, target: PerfectTarget) 
     await safeCall(false, 'delete_setting', `zazamastro_hero_${appId}`);
     await safeCall(false, 'delete_setting', `manual_zazamastro_hero_${appId}`);
     await safeCall(false, 'clear_perfect_hero_backup', appId);
+    await safeCall(false, 'clear_saved_perfect_hero', appId);
   }
   if (!await hasPerfectLogoComposition(appId)) await showLogo(appId);
 };
