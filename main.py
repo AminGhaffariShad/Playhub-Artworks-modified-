@@ -79,6 +79,7 @@ _download_progress = {}
 SETTINGS_FILE = Path(decky.DECKY_PLUGIN_SETTINGS_DIR) / 'playhub_artworks.json'
 PERFECT_SOURCE_DIR = Path(decky.DECKY_PLUGIN_RUNTIME_DIR) / 'perfect_sources'
 PERFECT_HERO_BACKUP_DIR = Path(decky.DECKY_PLUGIN_RUNTIME_DIR) / 'perfect_hero_backups'
+PERFECT_HERO_SAVED_DIR = Path(decky.DECKY_PLUGIN_RUNTIME_DIR) / 'perfect_hero_saved'
 DERIVED_COVER_BACKUP_DIR = Path(decky.DECKY_PLUGIN_RUNTIME_DIR) / 'derived_cover_backups'
 SETTINGS_BACKUP_FILE = SETTINGS_FILE.with_suffix('.json.bak')
 
@@ -1968,8 +1969,7 @@ class Plugin:
         numeric = int(_normalized_numeric_id(appid, 'PA_ERROR_INVALID_ARTWORK'))
         if numeric <= 0 or numeric > 0xffffffff:
             raise ValueError('PA_ERROR_INVALID_ARTWORK')
-        await self.clear_perfect_hero_backup(numeric)
-        await self.clear_perfect_source(numeric, 'hero')
+        # Keep perfect_hero_backups and perfect_sources intact so switching back and forth stays lossless.
         async with self._settings_lock:
             pending = dict(self._settings_data)
             for prefix in (
@@ -1986,6 +1986,163 @@ class Plugin:
             self._settings_data = pending
         _diagnostic('perfect.hero.restored', appid=numeric)
         return True
+
+    # --- Backup & Restore of composed Perfect Heroes --------------------
+
+    def _perfect_hero_saved_dir(self, appid):
+        numeric = int(_normalized_numeric_id(appid, 'PA_ERROR_INVALID_ARTWORK'))
+        if numeric <= 0 or numeric > 0xffffffff:
+            raise ValueError('PA_ERROR_INVALID_ARTWORK')
+        return PERFECT_HERO_SAVED_DIR / str(numeric)
+
+    async def backup_perfect_hero_composition(self, appid=0, steam_user=''):
+        """Snapshot the currently installed Perfect Hero image and metadata so it can be restored later."""
+        def backup_sync():
+            numeric = int(_normalized_numeric_id(appid, 'PA_ERROR_INVALID_ARTWORK'))
+            saved_dir = self._perfect_hero_saved_dir(numeric)
+            metadata_path = saved_dir / 'metadata.json'
+            with self._derived_cover_lock:
+                user_ids = self._resolve_user_ids(steam_user)
+                userdata = get_steam_userdata()
+                hero_src = None
+                for uid in user_ids:
+                    grid_dir = userdata / uid / 'config' / 'grid'
+                    candidates = _grid_file_candidates(grid_dir, numeric, 'hero')
+                    if candidates:
+                        hero_src = candidates[0]
+                        break
+                if hero_src is None or not hero_src.is_file():
+                    return {'saved': False, 'reason': 'no_custom_hero'}
+
+                payload = hero_src.read_bytes()
+                fmt, _dims = _validate_artwork_content(payload, source=hero_src, allow_source=True)
+                saved_dir.mkdir(parents=True, exist_ok=True)
+                for old in list(saved_dir.glob('perfect_hero.*')):
+                    old.unlink(missing_ok=True)
+                filename = f'perfect_hero.{fmt}'
+                _atomic_write_bytes(saved_dir / filename, payload)
+
+                info = self._settings_data.get(f'perfect_hero_info_{numeric}')
+                zaza = self._settings_data.get(f'zazamastro_hero_{numeric}')
+                manual_zaza = self._settings_data.get(f'manual_zazamastro_hero_{numeric}')
+                with_logo = True
+                if isinstance(info, dict) and info.get('withLogo') is False:
+                    with_logo = False
+
+                metadata = {
+                    'version': 1,
+                    'appid': numeric,
+                    'filename': filename,
+                    'format': fmt,
+                    'sha256': sha256(payload).hexdigest(),
+                    'with_logo': with_logo,
+                    'perfect_hero_info': info if isinstance(info, dict) else {'version': 120, 'origin': 'manual', 'withLogo': with_logo},
+                    'zazamastro_hero': zaza if isinstance(zaza, dict) else None,
+                    'manual_zazamastro_hero': bool(manual_zaza),
+                    'saved_at': datetime.now(timezone.utc).isoformat(),
+                }
+                _atomic_write_json(metadata_path, metadata)
+                return {'saved': True, 'sha256': metadata['sha256']}
+
+        try:
+            return await asyncio.get_running_loop().run_in_executor(self._download_executor, backup_sync)
+        except Exception as error:
+            _diagnostic('perfect.hero.composition_backup_failed', appid=appid, error=error)
+            return {'saved': False}
+
+    async def get_saved_perfect_hero_info(self, appid=0):
+        def read_sync():
+            try:
+                saved_dir = self._perfect_hero_saved_dir(appid)
+                metadata_path = saved_dir / 'metadata.json'
+                if not metadata_path.is_file():
+                    return {'exists': False}
+                metadata = _read_json_object(metadata_path)
+                hero_file = saved_dir / str(metadata.get('filename') or '')
+                if not hero_file.is_file():
+                    return {'exists': False}
+                return {
+                    'exists': True,
+                    'path': str(hero_file),
+                    'with_logo': bool(metadata.get('with_logo', True)),
+                    'saved_at': str(metadata.get('saved_at') or ''),
+                }
+            except Exception as error:
+                _diagnostic('perfect.hero.saved_info_failed', appid=appid, error=error)
+                return {'exists': False}
+
+        return await asyncio.get_running_loop().run_in_executor(self._download_executor, read_sync)
+
+    async def prepare_saved_perfect_hero_restore(self, appid=0):
+        def prepare_sync():
+            try:
+                saved_dir = self._perfect_hero_saved_dir(appid)
+                metadata_path = saved_dir / 'metadata.json'
+                if not metadata_path.is_file():
+                    return {'exists': False}
+                metadata = _read_json_object(metadata_path)
+                hero_file = saved_dir / str(metadata.get('filename') or '')
+                if not hero_file.is_file():
+                    return {'exists': False}
+                return {
+                    'exists': True,
+                    'hero_path': str(hero_file),
+                    'with_logo': bool(metadata.get('with_logo', True)),
+                }
+            except Exception as error:
+                _diagnostic('perfect.hero.saved_prepare_failed', appid=appid, error=error)
+                return {'exists': False}
+
+        return await asyncio.get_running_loop().run_in_executor(self._download_executor, prepare_sync)
+
+    async def complete_saved_perfect_hero_restore(self, appid=0):
+        numeric = int(_normalized_numeric_id(appid, 'PA_ERROR_INVALID_ARTWORK'))
+        if numeric <= 0 or numeric > 0xffffffff:
+            raise ValueError('PA_ERROR_INVALID_ARTWORK')
+        saved_dir = self._perfect_hero_saved_dir(numeric)
+        metadata_path = saved_dir / 'metadata.json'
+        metadata = _read_json_object(metadata_path) if metadata_path.is_file() else {}
+        with_logo = bool(metadata.get('with_logo', True))
+        info = metadata.get('perfect_hero_info')
+        zaza = metadata.get('zazamastro_hero')
+        manual_zaza = bool(metadata.get('manual_zazamastro_hero'))
+
+        async with self._settings_lock:
+            pending = dict(self._settings_data)
+            pending[f'perfect_hero_{numeric}'] = True
+            pending[f'perfect_hero_info_{numeric}'] = info if isinstance(info, dict) else {'version': 120, 'origin': 'manual', 'withLogo': with_logo}
+            if isinstance(zaza, dict) and zaza:
+                pending[f'zazamastro_hero_{numeric}'] = zaza
+            if manual_zaza:
+                pending[f'manual_zazamastro_hero_{numeric}'] = True
+            if with_logo:
+                pending[f'logo_hidden_{numeric}'] = True
+                pending[f'logo_visible_{numeric}'] = False
+            await asyncio.to_thread(_write_settings_file, pending)
+            self._settings_data = pending
+        _diagnostic('perfect.hero.composition_restored', appid=numeric)
+        return True
+
+    async def clear_saved_perfect_hero(self, appid=0):
+        def clear_sync():
+            with self._derived_cover_lock:
+                saved_dir = self._perfect_hero_saved_dir(appid)
+                if not saved_dir.exists():
+                    return True
+                for child in list(saved_dir.iterdir()):
+                    if child.is_file():
+                        child.unlink(missing_ok=True)
+                try:
+                    saved_dir.rmdir()
+                except OSError:
+                    pass
+                return True
+
+        try:
+            return await asyncio.get_running_loop().run_in_executor(self._download_executor, clear_sync)
+        except Exception as error:
+            _diagnostic('perfect.hero.saved_clear_failed', appid=appid, error=error)
+            return False
 
     # --- Covers derived from a banner or hero ---------------------------
 
