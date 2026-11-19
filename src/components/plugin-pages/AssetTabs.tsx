@@ -29,7 +29,16 @@ import OfficialAssetsModal from '../../modals/OfficialAssetsModal';
 import MenuIcon from '../Icons/MenuIcon';
 import t, { localizeError } from '../../utils/i18n';
 import { hideLogo, isLogoHidden, showLogo } from '../../utils/logoControl';
-import { clearPerfectArtwork, hasPerfectHeroBackup, isPerfectArtwork, markPerfectArtwork, restorePerfectHero } from '../../utils/perfectArtwork';
+import {
+  backupPerfectHeroComposition,
+  clearPerfectArtwork,
+  hasPerfectHeroBackup,
+  hasSavedPerfectHero,
+  isPerfectArtwork,
+  markPerfectArtwork,
+  restorePerfectHero,
+  restoreSavedPerfectHero,
+} from '../../utils/perfectArtwork';
 
 import ManageTab from './ManageTab';
 import AssetTab from './AssetTab';
@@ -81,6 +90,7 @@ const AssetTabs: FC<{
   const [logoHidden, setLogoHidden] = useState(false);
   const [perfect, setPerfect] = useState<{ hero: boolean; grid_l: boolean }>({ hero: false, grid_l: false });
   const [canRestoreHero, setCanRestoreHero] = useState(false);
+  const [canRestoreSavedPerfect, setCanRestoreSavedPerfect] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -108,13 +118,15 @@ const AssetTabs: FC<{
 
   const refreshPerfect = useCallback(async () => {
     if (!appOverview?.appid) return;
-    const [hero, banner, heroBackup] = await Promise.all([
+    const [hero, banner, heroBackup, savedPerfect] = await Promise.all([
       isPerfectArtwork(appOverview.appid, 'hero'),
       isPerfectArtwork(appOverview.appid, 'grid_l'),
       hasPerfectHeroBackup(appOverview.appid),
+      hasSavedPerfectHero(appOverview.appid),
     ]);
     setPerfect({ hero, grid_l: banner });
     setCanRestoreHero(heroBackup);
+    setCanRestoreSavedPerfect(savedPerfect);
   }, [appOverview?.appid]);
 
   useEffect(() => { void refreshPerfect(); }, [refreshPerfect]);
@@ -248,12 +260,44 @@ const AssetTabs: FC<{
       setLogoHidden(await isLogoHidden(appOverview.appid));
       toaster.toast({
         title: appOverview.display_name,
-        body: t('PA_HERO_RESTORED', 'Original hero, logo, and logo position restored.'),
+        body: t('PA_HERO_RESTORED', 'Perfect Hero backed up; original hero, logo, and logo position restored.'),
         icon: <MenuIcon />,
         duration: 2200,
       });
     } catch (error: any) {
       toaster.toast({ title: t('PA_REMOVE_FAILED', 'Restore failed'), body: localizeError(error, 'PA_TRY_AGAIN'), icon: <MenuIcon fill="#ff5d5d" /> });
+    }
+  };
+
+  const backupPerfect = async () => {
+    try {
+      const saved = await backupPerfectHeroComposition(appOverview.appid);
+      await refreshPerfect();
+      toaster.toast({
+        title: appOverview.display_name,
+        body: saved ? 'Perfect Hero backed up.' : 'Could not back up Perfect Hero.',
+        icon: <MenuIcon fill={saved ? undefined : '#ff5d5d'} />,
+        duration: 2000,
+      });
+    } catch (error: any) {
+      toaster.toast({ title: 'Backup failed', body: localizeError(error, 'PA_TRY_AGAIN'), icon: <MenuIcon fill="#ff5d5d" /> });
+    }
+  };
+
+  const restoreSavedPerfect = async () => {
+    try {
+      const restored = await restoreSavedPerfectHero(appOverview.appid);
+      if (!restored) return;
+      await refreshPerfect();
+      setLogoHidden(await isLogoHidden(appOverview.appid));
+      toaster.toast({
+        title: appOverview.display_name,
+        body: 'Saved Perfect Hero restored.',
+        icon: <MenuIcon />,
+        duration: 2200,
+      });
+    } catch (error: any) {
+      toaster.toast({ title: 'Restore failed', body: localizeError(error, 'PA_TRY_AGAIN'), icon: <MenuIcon fill="#ff5d5d" /> });
     }
   };
 
@@ -360,9 +404,19 @@ const AssetTabs: FC<{
                   <MdTune /><span>{t('PA_POSITION_LOGO', "Position logo")}</span>
                 </DialogButton>
               )}
+              {assetType === 'hero' && perfect.hero && (
+                <DialogButton className="pa-action" onClick={() => void backupPerfect()}>
+                  <MdAutoAwesome /><span>Backup Perfect Hero</span>
+                </DialogButton>
+              )}
+              {assetType === 'hero' && !perfect.hero && canRestoreSavedPerfect && (
+                <DialogButton className="pa-action" onClick={() => void restoreSavedPerfect()}>
+                  <MdAutoAwesome /><span>Restore Perfect Hero</span>
+                </DialogButton>
+              )}
               {assetType === 'hero' && (perfect.hero || canRestoreHero) && (
                 <DialogButton className="pa-action" onClick={() => void restoreHero()}>
-                  <HiArrowUturnLeft /><span>{t('PA_RESTORE_HERO', 'Restore Hero')}</span>
+                  <HiArrowUturnLeft /><span>{t('PA_RESTORE_HERO', 'Restore Original Hero')}</span>
                 </DialogButton>
               )}
               {perfect[composerTarget] && (

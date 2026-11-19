@@ -8,7 +8,14 @@ import { ASSET_TYPE } from '../../constants';
 import useSGDB from '../../hooks/useSGDB';
 import MenuIcon from '../Icons/MenuIcon';
 import getAppOverview from '../../utils/getAppOverview';
-import { clearPerfectArtwork, hasPerfectHeroBackup, isPerfectArtwork, restorePerfectHero } from '../../utils/perfectArtwork';
+import {
+  clearPerfectArtwork,
+  hasPerfectHeroBackup,
+  hasSavedPerfectHero,
+  isPerfectArtwork,
+  restorePerfectHero,
+  restoreSavedPerfectHero,
+} from '../../utils/perfectArtwork';
 import openFilePicker, { isFilePickerCancelled } from '../../utils/openFilePicker';
 import { artworkSources, useArtworkPreview } from '../../utils/artworkSources';
 import { artworkPayloadUrl, readArtworkPayload } from '../../utils/artworkTransfer';
@@ -49,6 +56,8 @@ const AssetSlot: FC<{
   const [busy, setBusy] = useState(false);
   const [derivedCover, setDerivedCover] = useState(false);
   const [restorableHero, setRestorableHero] = useState(false);
+  const [restorableSavedPerfect, setRestorableSavedPerfect] = useState(false);
+  const [isActivePerfectHero, setIsActivePerfectHero] = useState(false);
   const [stylePreview, setStylePreview] = useState('');
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -85,15 +94,18 @@ const AssetSlot: FC<{
 
   const refresh = useCallback(async () => {
     await new Promise((resolve) => setTimeout(resolve, 400));
-    const [next, backup, heroBackup, heroPerfect] = await Promise.all([
+    const [next, backup, heroBackup, heroPerfect, savedPerfect] = await Promise.all([
       getAppOverview(app.appid),
       assetType === 'grid_p' ? getDerivedCoverBackupInfo(app.appid) : Promise.resolve(null),
       assetType === 'hero' ? hasPerfectHeroBackup(app.appid) : Promise.resolve(false),
       assetType === 'hero' ? isPerfectArtwork(app.appid, 'hero') : Promise.resolve(false),
+      assetType === 'hero' ? hasSavedPerfectHero(app.appid) : Promise.resolve(false),
     ]);
     if (next) setOverview(next);
     setDerivedCover(Boolean(backup?.recoverable ?? backup?.is_derived));
     setRestorableHero(Boolean(heroBackup || heroPerfect));
+    setRestorableSavedPerfect(Boolean(savedPerfect));
+    setIsActivePerfectHero(Boolean(heroPerfect));
     setReloadKey((value) => value + 1);
   }, [app.appid, assetType]);
 
@@ -106,8 +118,16 @@ const AssetSlot: FC<{
       });
     } else if (assetType === 'hero') {
       setDerivedCover(false);
-      void Promise.all([hasPerfectHeroBackup(app.appid), isPerfectArtwork(app.appid, 'hero')]).then(([heroBackup, heroPerfect]) => {
-        if (active) setRestorableHero(Boolean(heroBackup || heroPerfect));
+      void Promise.all([
+        hasPerfectHeroBackup(app.appid),
+        isPerfectArtwork(app.appid, 'hero'),
+        hasSavedPerfectHero(app.appid),
+      ]).then(([heroBackup, heroPerfect, savedPerfect]) => {
+        if (active) {
+          setRestorableHero(Boolean(heroBackup || heroPerfect));
+          setRestorableSavedPerfect(Boolean(savedPerfect));
+          setIsActivePerfectHero(Boolean(heroPerfect));
+        }
       });
     } else {
       setDerivedCover(false);
@@ -269,9 +289,27 @@ const AssetSlot: FC<{
                   });
                 }
               })}
-              onOKActionDescription={t('PA_RESTORE_HERO', 'Restore Hero')}
+              onOKActionDescription={t('PA_RESTORE_HERO', 'Restore Original Hero')}
             >
-              <HiArrowUturnLeft /><span>{t('PA_RESTORE_HERO', 'Restore Hero')}</span>
+              <HiArrowUturnLeft /><span>{t('PA_RESTORE_HERO', 'Restore Original Hero')}</span>
+            </DialogButton>
+          )}
+          {assetType === 'hero' && !isActivePerfectHero && restorableSavedPerfect && (
+            <DialogButton
+              disabled={busy}
+              onClick={() => run(async () => {
+                const restored = await restoreSavedPerfectHero(app.appid);
+                if (restored) {
+                  toaster.toast({
+                    title: 'Playhub Artworks',
+                    body: 'Saved Perfect Hero restored.',
+                    icon: <MenuIcon />,
+                  });
+                }
+              })}
+              onOKActionDescription="Restore Perfect Hero"
+            >
+              <HiArrowUturnLeft /><span>Restore Perfect Hero</span>
             </DialogButton>
           )}
         </Focusable>
