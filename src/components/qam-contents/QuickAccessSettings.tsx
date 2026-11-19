@@ -71,6 +71,8 @@ const COVER_CARDS: Array<{
   replaceConfirm?: { title: string; body: string; ok: string };
   localOnlyReplace?: ZazaBatchKind;
   restoreKind?: ZazaBatchKind;
+  backupPerfectKind?: ZazaBatchKind;
+  restorePerfectKind?: ZazaBatchKind;
 }> = [
   {
     shape: 'portrait',
@@ -101,6 +103,8 @@ const COVER_CARDS: Array<{
     },
     localOnlyReplace: 'perfectHeroLocal',
     restoreKind: 'perfectHeroRestore',
+    backupPerfectKind: 'perfectHeroBackup',
+    restorePerfectKind: 'perfectHeroRestoreSaved',
   },
 ];
 
@@ -249,7 +253,13 @@ const QuickAccessSettings: VFC = () => {
 
   const runBulk = useCallback(async (kind: ZazaBatchKind, label: string) => {
     if (batchProgress?.running) return;
-    if (kind !== 'resetArtwork' && kind !== 'perfectHeroLocal' && kind !== 'perfectHeroRestore') {
+    if (
+      kind !== 'resetArtwork'
+      && kind !== 'perfectHeroLocal'
+      && kind !== 'perfectHeroRestore'
+      && kind !== 'perfectHeroBackup'
+      && kind !== 'perfectHeroRestoreSaved'
+    ) {
       const configuredKey = apiKey.trim() || await readApiKey();
       if (!configuredKey) {
         toaster.toast({ title: t('PA_KEY_MISSING', "Missing key"), body: t('PA_ENTER_KEY', "Enter your SteamGridDB key."), icon: <FaKey /> });
@@ -433,12 +443,48 @@ const QuickAccessSettings: VFC = () => {
                      disabled={batchProgress?.running}
                      onClick={() => startAction({
                        kind: card.localOnlyReplace as ZazaBatchKind,
-                       title: `Rebuild (Local Only)`,
+                       title: `Build Perfect Heroes (Local)`,
+                       description: '',
+                       icon: <FaImage />,
+                       confirm: {
+                         title: 'Build Perfect Heroes from local artwork?',
+                         body: 'Creates Perfect Heroes using each game’s currently installed hero and logo without downloading from the internet. Existing heroes and logos are backed up first so you can restore them anytime.',
+                         ok: 'Build (Local)',
+                       },
+                     })}
+                   >
+                     Rebuild (Local)
+                   </DialogButton>
+                )}
+                {card.backupPerfectKind && (
+                   <DialogButton
+                     disabled={batchProgress?.running}
+                     onClick={() => startAction({
+                       kind: card.backupPerfectKind as ZazaBatchKind,
+                       title: `Backup Perfect Heroes`,
                        description: '',
                        icon: <FaImage />
                      })}
                    >
-                     Rebuild (Local)
+                     Backup Perfect Heroes
+                   </DialogButton>
+                )}
+                {card.restorePerfectKind && (
+                   <DialogButton
+                     disabled={batchProgress?.running}
+                     onClick={() => startAction({
+                       kind: card.restorePerfectKind as ZazaBatchKind,
+                       title: `Restore Perfect Heroes`,
+                       description: '',
+                       icon: <FaImage />,
+                       confirm: {
+                         title: 'Restore backed-up Perfect Heroes?',
+                         body: 'Restores your saved Perfect Heroes (both automatic and custom ones) and hides Steam’s separate logo layer. Your current original heroes and logos are backed up first.',
+                         ok: 'Restore Perfect Heroes',
+                       },
+                     })}
+                   >
+                     Restore Perfect Heroes
                    </DialogButton>
                 )}
                 {card.restoreKind && (
@@ -448,7 +494,12 @@ const QuickAccessSettings: VFC = () => {
                        kind: card.restoreKind as ZazaBatchKind,
                        title: `Restore Original Heroes`,
                        description: '',
-                       icon: <FaImage />
+                       icon: <FaImage />,
+                       confirm: {
+                         title: 'Restore original heroes and logos?',
+                         body: 'Your currently applied Perfect Heroes are backed up automatically first, then your previous heroes, logos, and logo positions are restored.',
+                         ok: 'Restore Originals',
+                       },
                      })}
                    >
                      Restore Original Heroes
@@ -461,6 +512,8 @@ const QuickAccessSettings: VFC = () => {
                 || batchProgress.kind === card.replaceKind
                 || (Boolean(card.localOnlyReplace) && batchProgress.kind === card.localOnlyReplace)
                 || (Boolean(card.restoreKind) && batchProgress.kind === card.restoreKind)
+                || (Boolean(card.backupPerfectKind) && batchProgress.kind === card.backupPerfectKind)
+                || (Boolean(card.restorePerfectKind) && batchProgress.kind === card.restorePerfectKind)
               ) && <Progress value={batchProgress} />}
             </div>
           ))}
